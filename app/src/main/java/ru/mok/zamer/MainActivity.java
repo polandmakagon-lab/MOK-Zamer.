@@ -24,7 +24,7 @@ public class MainActivity extends Activity {
     final String[] mountTypes={"На оконный проём","На створки"};
     @Override public void onCreate(Bundle b){super.onCreate(b);db=new DB(this);showOrders();}
     LinearLayout vertical(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);l.setPadding(22,18,22,18);return l;}
-    void screen(String title){ScrollView s=new ScrollView(this);root=vertical();s.addView(root);setContentView(s);TextView t=new TextView(this);t.setText(title);t.setTextSize(24);t.setTextColor(Color.rgb(20,55,95));root.addView(t);}
+    void screen(String title){ScrollView s=new ScrollView(this);root=vertical();root.setPadding(22,56,22,18);s.addView(root);setContentView(s);TextView t=new TextView(this);t.setText(title);t.setTextSize(24);t.setTextColor(Color.rgb(20,55,95));root.addView(t);}
     EditText field(String hint){EditText e=new EditText(this);e.setHint(hint);e.setSingleLine(true);root.addView(e);return e;}
     void action(String label,Runnable r){Button b=new Button(this);b.setText(label);root.addView(b);b.setOnClickListener(v->r.run());}
     void message(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
