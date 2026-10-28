@@ -8,6 +8,11 @@ import android.database.sqlite.*;
 import android.graphics.Color;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Bitmap;
+import android.graphics.pdf.PdfDocument;
+import android.provider.MediaStore;
+import android.net.Uri;
+import java.io.OutputStream;
 import android.view.*;
 import android.widget.*;
 import java.util.ArrayList;
@@ -51,6 +56,10 @@ public class MainActivity extends Activity {
                 if(mountType!=null&&mountType.equals(mountTypes[0])){
                     label("Замер всего окна: "+savedMeasurement(wid,0));
                 }
+                action("Сохранить PNG в галерею",()->exportDrawing(wid,false,false));
+                action("Сохранить PDF",()->exportDrawing(wid,true,false));
+                action("Поделиться PNG",()->exportDrawing(wid,false,true));
+                action("Поделиться PDF",()->exportDrawing(wid,true,true));
                 action("Открыть окно: конструкция → монтаж → замеры №"+wid,()->editSections(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
@@ -436,6 +445,51 @@ public class MainActivity extends Activity {
         }
         @Override public boolean performClick(){super.performClick();return true;}
     }
+    void exportDrawing(int windowId,boolean pdf,boolean share){
+        ArrayList<Section> sections=loadSections(windowId);
+        if(sections.isEmpty()){message("Сначала создайте окно");return;}
+        TapSectionsDrawing view=new TapSectionsDrawing(this,sections,loadPartSizes(windowId),loadPartSides(windowId),i->{});
+        int width=1200,height=600;
+        view.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));
+        view.layout(0,0,width,height);
+        Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);
+        Canvas canvas=new Canvas(bitmap);canvas.drawColor(Color.WHITE);view.draw(canvas);
+        Uri uri=null;
+        try{
+            ContentValues values=new ContentValues();
+            values.put(MediaStore.MediaColumns.DISPLAY_NAME,"MOK_Zamer_window_"+windowId+(pdf?".pdf":".png"));
+            String mime=pdf?"application/pdf":"image/png";
+            values.put(MediaStore.MediaColumns.MIME_TYPE,mime);
+            values.put(MediaStore.MediaColumns.RELATIVE_PATH,pdf?"Download/MOK Zamer":"Pictures/MOK Zamer");
+            values.put(MediaStore.MediaColumns.IS_PENDING,1);
+            uri=getContentResolver().insert(pdf?MediaStore.Downloads.EXTERNAL_CONTENT_URI:MediaStore.Images.Media.EXTERNAL_CONTENT_URI,values);
+            if(uri==null)throw new Exception("Не удалось создать файл");
+            try(OutputStream out=getContentResolver().openOutputStream(uri)){
+                if(out==null)throw new Exception("Не удалось открыть файл");
+                if(pdf){
+                    PdfDocument doc=new PdfDocument();
+                    try{
+                        PdfDocument.Page page=doc.startPage(new PdfDocument.PageInfo.Builder(1240,1754,1).create());
+                        Canvas pc=page.getCanvas();pc.drawColor(Color.WHITE);
+                        Paint p=new Paint(3);p.setColor(Color.BLACK);p.setTextSize(42);
+                        pc.drawText("МОК Замер — окно №"+windowId,40,100,p);
+                        pc.drawBitmap(bitmap,20,170,p);
+                        doc.finishPage(page);doc.writeTo(out);
+                    }finally{doc.close();}
+                }else if(!bitmap.compress(Bitmap.CompressFormat.PNG,100,out))throw new Exception("Ошибка PNG");
+            }
+            ContentValues ready=new ContentValues();ready.put(MediaStore.MediaColumns.IS_PENDING,0);
+            getContentResolver().update(uri,ready,null,null);
+            if(share){
+                Intent send=new Intent(Intent.ACTION_SEND);send.setType(pdf?"application/pdf":"image/png");
+                send.putExtra(Intent.EXTRA_STREAM,uri);send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                startActivity(Intent.createChooser(send,"Отправить чертёж"));
+            }else message(pdf?"PDF сохранён в Загрузки":"Чертёж сохранён в Галерею");
+        }catch(Exception e){
+            if(uri!=null)getContentResolver().delete(uri,null,null);
+            message("Ошибка сохранения: "+e.getMessage());
+        }finally{bitmap.recycle();}
+    }
     void editWindow(int orderId,int windowId){
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT room,system,width,height,control_side,mount_type FROM windows WHERE id=? AND order_id=?",new String[]{""+windowId,""+orderId})){
             if(!c.moveToFirst()){message("Окно не найдено");showOrder(orderId);return;}
@@ -463,6 +517,6 @@ public class MainActivity extends Activity {
     static class DB extends SQLiteOpenHelper{
         DB(Context c){super(c,"mok_zamer.db",null,6);}
         @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");}
-        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");if(oldV<5)d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,PRIMARY KEY(window_id,part))");}
+        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");if(oldV<5)d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");if(oldV>=5&&oldV<6)d.execSQL("ALTER TABLE measurements ADD COLUMN control_side TEXT");}
     }
 }
