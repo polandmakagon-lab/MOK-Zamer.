@@ -56,10 +56,11 @@ public class MainActivity extends Activity {
                 if(mountType!=null&&mountType.equals(mountTypes[0])){
                     label("Замер всего окна: "+savedMeasurement(wid,0));
                 }
-                action("Сохранить PNG в галерею",()->exportDrawing(wid,false,false));
-                action("Сохранить PDF",()->exportDrawing(wid,true,false));
-                action("Поделиться PNG",()->exportDrawing(wid,false,true));
-                action("Поделиться PDF",()->exportDrawing(wid,true,true));
+                action("Сохранить / Поделиться",()->new AlertDialog.Builder(this)
+                    .setTitle("Чертёж окна №"+wid)
+                    .setItems(new String[]{"Сохранить PNG в галерею","Сохранить PDF","Поделиться PNG","Поделиться PDF"},
+                        (dialog,which)->exportDrawing(wid,which==1||which==3,which>=2))
+                    .show());
                 action("Открыть окно: конструкция → монтаж → замеры №"+wid,()->editSections(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
