@@ -6,6 +6,8 @@ import android.content.*;
 import android.database.Cursor;
 import android.database.sqlite.*;
 import android.graphics.Color;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.view.*;
 import android.widget.*;
 
@@ -35,9 +37,57 @@ public class MainActivity extends Activity {
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
                 label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side));
+                root.addView(new WindowDrawing(this,c.getInt(3),c.getInt(4)));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
         }action("К списку заказов",this::showOrders);
+    }
+    static class WindowDrawing extends View {
+        final int widthMm, heightMm;
+        final Paint p = new Paint(3);
+        WindowDrawing(Context context, int w, int h) {
+            super(context);
+            widthMm = w;
+            heightMm = h;
+            setMinimumHeight((int)(240 * getResources().getDisplayMetrics().density));
+        }
+        @Override protected void onMeasure(int wSpec, int hSpec) {
+            int w = MeasureSpec.getSize(wSpec);
+            int h = (int)(250 * getResources().getDisplayMetrics().density);
+            setMeasuredDimension(w, h);
+        }
+        @Override protected void onDraw(Canvas canvas) {
+            super.onDraw(canvas);
+            float density = getResources().getDisplayMetrics().density;
+            float w = getWidth(), h = getHeight();
+            canvas.drawColor(Color.rgb(248,250,253));
+            if (widthMm <= 0 || heightMm <= 0) return;
+            float availableW = w - 112*density;
+            float availableH = h - 94*density;
+            float scale = Math.min(availableW/widthMm, availableH/heightMm);
+            float rw = widthMm*scale, rh = heightMm*scale;
+            float left = (w-rw)/2f - 8*density;
+            float top = (h-rh)/2f + 8*density;
+            p.setStyle(Paint.Style.FILL);
+            p.setColor(Color.rgb(223,237,247));
+            canvas.drawRect(left,top,left+rw,top+rh,p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(3*density);
+            p.setColor(Color.rgb(28,83,124));
+            canvas.drawRect(left,top,left+rw,top+rh,p);
+            p.setStrokeWidth(density);
+            canvas.drawLine(left+rw/2,top,left+rw/2,top+rh,p);
+            p.setStyle(Paint.Style.FILL);
+            p.setTextSize(14*density);
+            p.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText(widthMm+" мм",w/2,top-15*density,p);
+            p.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText(heightMm+" мм",left+rw+9*density,top+rh/2,p);
+            p.setTextSize(11*density);
+            p.setColor(Color.DKGRAY);
+            p.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText("Схема окна · вид из комнаты",w/2,h-10*density,p);
+        }
     }
     void label(String value){TextView t=new TextView(this);t.setText(value);t.setTextSize(17);t.setPadding(0,14,0,10);root.addView(t);}
     Spinner spinner(String[] options,String selected){Spinner s=new Spinner(this);s.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,options));root.addView(s);
