@@ -278,7 +278,7 @@ public class MainActivity extends Activity {
         label("Монтаж: "+mount+" · размеры по ширине и высоте");
         if(bySections && !sections.isEmpty()){
             label("Нажмите на створку на чертеже, затем введите ширину и высоту изделия.");
-            root.addView(new TapSectionsDrawing(this,sections,index->measurePart(orderId,windowId,index+1)));
+            root.addView(new TapSectionsDrawing(this,sections,loadPartSizes(windowId),index->measurePart(orderId,windowId,index+1)));
             label("Нажмите на секцию для ввода ширины и высоты. Для форточки используйте кнопку под схемой.");
             for(int i=0;i<sections.size();i++){
                 final int index=i+1;
@@ -299,6 +299,13 @@ public class MainActivity extends Activity {
         action("Изменить конструкцию",()->editSections(orderId,windowId));
         action("Изменить способ монтажа",()->chooseMount(orderId,windowId));
         action("Готово · к заказу",()->showOrder(orderId));
+    }
+    java.util.HashMap<Integer,int[]> loadPartSizes(int windowId){
+        java.util.HashMap<Integer,int[]> sizes=new java.util.HashMap<>();
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT part,width,height FROM measurements WHERE window_id=?",new String[]{""+windowId})){
+            while(c.moveToNext())sizes.put(c.getInt(0),new int[]{c.getInt(1),c.getInt(2)});
+        }
+        return sizes;
     }
     String savedMeasurement(int windowId,int part){
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height FROM measurements WHERE window_id=? AND part=?",
@@ -333,16 +340,56 @@ public class MainActivity extends Activity {
     interface PartClick {void selected(int index);}
     static class TapSectionsDrawing extends SectionsDrawing{
         final PartClick callback;
-        TapSectionsDrawing(Context c,ArrayList<Section> sections,PartClick callback){super(c,sections);this.callback=callback;}
-        @Override public boolean onTouchEvent(android.view.MotionEvent event){
+        final java.util.HashMap<Integer,int[]> sizes;
+        int selected=-1;
+        TapSectionsDrawing(Context c,ArrayList<Section> sections,java.util.HashMap<Integer,int[]> sizes,PartClick callback){
+            super(c,sections);this.sizes=sizes;this.callback=callback;
+        }
+        @Override protected void onDraw(Canvas canvas){
+            super.onDraw(canvas);
+            float d=getResources().getDisplayMetrics().density;
+            float total=0;for(Section sec:sections)total+=sec.width;
+            if(total<=0)return;
+            float left=12*d,right=getWidth()-12*d,top=15*d,bottom=getHeight()-35*d;
+            float x=left;
+            for(int i=0;i<sections.size();i++){
+                float next=x+(right-left)*sections.get(i).width/total;
+                int[] size=sizes.get(i+1);
+                paint.setStyle(Paint.Style.FILL);
+                if(size!=null){
+                    paint.setColor(Color.argb(85,55,168,98));
+                    canvas.drawRect(x+2*d,top+2*d,next-2*d,bottom-2*d,paint);
+                }
+                if(i==selected){
+                    paint.setColor(Color.argb(110,255,190,55));
+                    canvas.drawRect(x+2*d,top+2*d,next-2*d,bottom-2*d,paint);
+                    paint.setStyle(Paint.Style.STROKE);
+                    paint.setColor(Color.rgb(231,119,12));paint.setStrokeWidth(4*d);
+                    canvas.drawRect(x+2*d,top+2*d,next-2*d,bottom-2*d,paint);
+                }
+                if(size!=null){
+                    paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(14,65,104));
+                    paint.setTextSize(11*d);paint.setTextAlign(Paint.Align.CENTER);
+                    float center=(x+next)/2;
+                    canvas.drawText(size[0]+" мм",center,top+(bottom-top)*0.57f,paint);
+                    canvas.drawText(size[1]+" мм",center,top+(bottom-top)*0.68f,paint);
+                }
+                x=next;
+            }
+        }
+        @Override public boolean onTouchEvent(MotionEvent event){
+            if(event.getAction()==MotionEvent.ACTION_DOWN)return true;
             if(event.getAction()==MotionEvent.ACTION_UP){
                 float d=getResources().getDisplayMetrics().density;
                 float x=event.getX(),left=12*d,right=getWidth()-12*d;
                 if(x<left||x>right)return true;
                 float total=0;for(Section sec:sections)total+=sec.width;
                 float pos=(x-left)/(right-left)*total,acc=0;
-                for(int i=0;i<sections.size();i++){acc+=sections.get(i).width;if(pos<=acc){callback.selected(i);break;}}
-                performClick();return true;
+                for(int i=0;i<sections.size();i++){
+                    acc+=sections.get(i).width;
+                    if(pos<=acc){selected=i;invalidate();performClick();callback.selected(i);break;}
+                }
+                return true;
             }
             return true;
         }
