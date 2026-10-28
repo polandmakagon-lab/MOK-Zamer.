@@ -10,6 +10,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.view.*;
 import android.widget.*;
+import java.util.ArrayList;
 
 public class MainActivity extends Activity {
     DB db; LinearLayout root; int currentOrder=-1;
@@ -39,9 +40,142 @@ public class MainActivity extends Activity {
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
                 label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side)+"\nМонтаж: "+(c.getString(6)==null?"Не указан":c.getString(6)));
                 root.addView(new WindowDrawing(this,c.getInt(3),c.getInt(4)));
+                showSections(wid);
+                action("Конструктор створок и форточек №"+wid,()->editSections(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
         }action("К списку заказов",this::showOrders);
+    }
+
+    final String[] sectionTypes={"Поворотная","Поворотно-откидная","Откидная","Глухая"};
+    static class Section {
+        int width, ventHeight;
+        String type;
+        Section(int w,String t,int v){width=w;type=t;ventHeight=v;}
+    }
+    ArrayList<Section> loadSections(int windowId){
+        ArrayList<Section> result=new ArrayList<>();
+        try(Cursor c=db.getReadableDatabase().rawQuery(
+            "SELECT width,type,vent_height FROM sections WHERE window_id=? ORDER BY position",
+            new String[]{""+windowId})){
+            while(c.moveToNext())result.add(new Section(c.getInt(0),c.getString(1),c.getInt(2)));
+        }
+        return result;
+    }
+    void showSections(int windowId){
+        ArrayList<Section> sections=loadSections(windowId);
+        if(sections.isEmpty())return;
+        StringBuilder summary=new StringBuilder("Конструкция: ");
+        for(int i=0;i<sections.size();i++){
+            Section sec=sections.get(i);
+            if(i>0)summary.append(" | ");
+            summary.append(i+1).append(": ").append(sec.type).append(" ").append(sec.width).append(" мм");
+            if(sec.ventHeight>0)summary.append(", форточка ").append(sec.ventHeight).append(" мм");
+        }
+        label(summary.toString());
+        root.addView(new SectionsDrawing(this,sections));
+    }
+    void editSections(int orderId,int windowId){
+        ArrayList<Section> sections=loadSections(windowId);
+        if(sections.isEmpty()){
+            int width=1000;
+            try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width FROM windows WHERE id=?",new String[]{""+windowId})){
+                if(c.moveToFirst())width=c.getInt(0);
+            }
+            sections.add(new Section(width,"Поворотная",0));
+        }
+        renderSectionEditor(orderId,windowId,sections);
+    }
+    void renderSectionEditor(int orderId,int windowId,ArrayList<Section> sections){
+        currentOrder=orderId;
+        screen("Конструктор окна №"+windowId);
+        label("Вид из комнаты. Добавьте секции слева направо. Форточка располагается сверху выбранной секции.");
+        root.addView(new SectionsDrawing(this,sections));
+        ArrayList<EditText> widths=new ArrayList<>();
+        ArrayList<EditText> vents=new ArrayList<>();
+        ArrayList<Spinner> types=new ArrayList<>();
+        for(int i=0;i<sections.size();i++){
+            Section sec=sections.get(i);
+            label("Секция "+(i+1));
+            Spinner type=spinner(sectionTypes,sec.type);types.add(type);
+            EditText width=field("Ширина секции, мм");width.setInputType(2);width.setText(""+sec.width);widths.add(width);
+            EditText vent=field("Высота верхней форточки, мм (0 = нет)");vent.setInputType(2);vent.setText(""+sec.ventHeight);vents.add(vent);
+        }
+        action("+ Добавить створку / секцию",()->{
+            if(!readSections(sections,widths,types,vents))return;
+            if(sections.size()>=8){message("Максимум 8 секций");return;}
+            sections.add(new Section(600,"Поворотная",0));
+            renderSectionEditor(orderId,windowId,sections);
+        });
+        if(sections.size()>1)action("Удалить последнюю секцию",()->{
+            if(!readSections(sections,widths,types,vents))return;
+            sections.remove(sections.size()-1);
+            renderSectionEditor(orderId,windowId,sections);
+        });
+        action("Сохранить конструкцию",()->{
+            if(!readSections(sections,widths,types,vents))return;
+            SQLiteDatabase database=db.getWritableDatabase();
+            database.beginTransaction();
+            try{
+                database.delete("sections","window_id=?",new String[]{""+windowId});
+                for(int i=0;i<sections.size();i++){
+                    Section sec=sections.get(i);
+                    ContentValues v=new ContentValues();
+                    v.put("window_id",windowId);v.put("position",i);
+                    v.put("width",sec.width);v.put("type",sec.type);v.put("vent_height",sec.ventHeight);
+                    if(database.insertOrThrow("sections",null,v)<0)throw new RuntimeException("Insert failed");
+                }
+                database.setTransactionSuccessful();
+                message("Конструкция сохранена");
+            }catch(Exception e){message("Ошибка сохранения конструкции");return;}
+            finally{database.endTransaction();}
+            showOrder(orderId);
+        });
+        action("Назад к заказу",()->showOrder(orderId));
+    }
+    boolean readSections(ArrayList<Section> sections,ArrayList<EditText> widths,ArrayList<Spinner> types,ArrayList<EditText> vents){
+        for(int i=0;i<sections.size();i++){
+            try{
+                int w=Integer.parseInt(widths.get(i).getText().toString().trim());
+                String vtext=vents.get(i).getText().toString().trim();
+                int v=vtext.isEmpty()?0:Integer.parseInt(vtext);
+                if(w<1||w>20000||v<0||v>20000){message("Проверьте размеры секции "+(i+1));return false;}
+                sections.get(i).width=w;
+                sections.get(i).ventHeight=v;
+                sections.get(i).type=types.get(i).getSelectedItem().toString();
+            }catch(Exception e){message("Проверьте размеры секции "+(i+1));return false;}
+        }
+        return true;
+    }
+    static class SectionsDrawing extends View{
+        final ArrayList<Section> sections;
+        final Paint paint=new Paint(3);
+        SectionsDrawing(Context c,ArrayList<Section> s){super(c);sections=new ArrayList<>(s);}
+        @Override protected void onMeasure(int w,int h){setMeasuredDimension(MeasureSpec.getSize(w),(int)(200*getResources().getDisplayMetrics().density));}
+        @Override protected void onDraw(Canvas canvas){
+            float d=getResources().getDisplayMetrics().density;
+            float total=0;for(Section sec:sections)total+=sec.width;
+            if(total<=0)return;
+            float left=12*d,top=15*d,right=getWidth()-12*d,bottom=getHeight()-35*d;
+            float x=left;
+            for(int i=0;i<sections.size();i++){
+                Section sec=sections.get(i);
+                float next=x+(right-left)*sec.width/total;
+                paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(224,239,248));
+                canvas.drawRect(x,top,next,bottom,paint);
+                paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(2*d);paint.setColor(Color.rgb(30,75,112));
+                canvas.drawRect(x,top,next,bottom,paint);
+                if(sec.ventHeight>0){
+                    float split=top+(bottom-top)*0.32f;
+                    canvas.drawLine(x,split,next,split,paint);
+                    canvas.drawLine(x,top,next,split,paint);
+                }
+                paint.setStyle(Paint.Style.FILL);paint.setTextSize(11*d);paint.setTextAlign(Paint.Align.CENTER);
+                canvas.drawText(""+(i+1), (x+next)/2,(top+bottom)/2,paint);
+                canvas.drawText(sec.width+" мм",(x+next)/2,bottom+17*d,paint);
+                x=next;
+            }
+        }
     }
     static class WindowDrawing extends View {
         final int widthMm, heightMm;
@@ -129,12 +263,12 @@ public class MainActivity extends Activity {
     void confirmDeleteWindow(int orderId,int windowId){new AlertDialog.Builder(this).setTitle("Удалить окно №"+windowId+"?")
         .setMessage("Окно будет удалено из заказа. Отменить удаление нельзя.")
         .setNegativeButton("Отмена",(d,w)->d.dismiss())
-        .setPositiveButton("Удалить",(d,w)->{int deleted=db.getWritableDatabase().delete("windows","id=? AND order_id=?",new String[]{""+windowId,""+orderId});
+        .setPositiveButton("Удалить",(d,w)->{db.getWritableDatabase().delete("sections","window_id=?",new String[]{""+windowId});int deleted=db.getWritableDatabase().delete("windows","id=? AND order_id=?",new String[]{""+windowId,""+orderId});
             if(deleted>0)message("Окно удалено");else message("Окно не найдено");showOrder(orderId);}).show();}
     @Override public void onBackPressed(){if(currentOrder>0)showOrders();else super.onBackPressed();}
     static class DB extends SQLiteOpenHelper{
-        DB(Context c){super(c,"mok_zamer.db",null,3);}
-        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");}
-        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");}
+        DB(Context c){super(c,"mok_zamer.db",null,4);}
+        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");}
+        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");}
     }
 }
