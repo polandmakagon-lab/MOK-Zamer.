@@ -276,22 +276,9 @@ public class MainActivity extends Activity {
         ArrayList<Section> sections=loadSections(windowId);
         screen("Шаг 5 · Замеры");
         label("Монтаж: "+mount+" · размеры по ширине и высоте");
-        label("Сторона управления жалюзи (вид из комнаты)");
-        Spinner sideChoice=spinner(controlSides,controlSide);
-        sideChoice.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
-            public void onNothingSelected(android.widget.AdapterView<?> parent){}
-            public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id){
-                ContentValues v=new ContentValues();v.put("control_side",controlSides[position]);
-                db.getWritableDatabase().update("windows",v,"id=?",new String[]{""+windowId});
-                if(root!=null){for(int i=0;i<root.getChildCount();i++){
-                    View child=root.getChildAt(i);
-                    if(child instanceof TapSectionsDrawing){((TapSectionsDrawing)child).controlSide=controlSides[position];child.invalidate();}
-                }}
-            }
-        });
         if(bySections && !sections.isEmpty()){
             label("Нажмите на створку на чертеже, затем введите ширину и высоту изделия.");
-            root.addView(new TapSectionsDrawing(this,sections,loadPartSizes(windowId),controlSide,index->measurePart(orderId,windowId,index+1)));
+            root.addView(new TapSectionsDrawing(this,sections,loadPartSizes(windowId),loadPartSides(windowId),index->measurePart(orderId,windowId,index+1)));
             label("Нажмите на секцию для ввода ширины и высоты. Для форточки используйте кнопку под схемой.");
             for(int i=0;i<sections.size();i++){
                 final int index=i+1;
@@ -320,6 +307,13 @@ public class MainActivity extends Activity {
         }
         return sizes;
     }
+    java.util.HashMap<Integer,String> loadPartSides(int windowId){
+        java.util.HashMap<Integer,String> sides=new java.util.HashMap<>();
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT part,control_side FROM measurements WHERE window_id=?",new String[]{""+windowId})){
+            while(c.moveToNext())sides.put(c.getInt(0),c.getString(1));
+        }
+        return sides;
+    }
     String savedMeasurement(int windowId,int part){
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height FROM measurements WHERE window_id=? AND part=?",
                 new String[]{""+windowId,""+part})){
@@ -332,9 +326,11 @@ public class MainActivity extends Activity {
         LinearLayout layout=new LinearLayout(this);layout.setOrientation(1);layout.setPadding(32,12,32,8);
         EditText width=new EditText(this);width.setHint("Ширина изделия, мм");width.setInputType(2);layout.addView(width);
         EditText height=new EditText(this);height.setHint("Высота изделия, мм");height.setInputType(2);layout.addView(height);
-        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height FROM measurements WHERE window_id=? AND part=?",
+        TextView sideLabel=new TextView(this);sideLabel.setText("Управление жалюзи");layout.addView(sideLabel);
+        Spinner side=new Spinner(this);side.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,controlSides));layout.addView(side);
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height,control_side FROM measurements WHERE window_id=? AND part=?",
                 new String[]{""+windowId,""+part})){
-            if(c.moveToFirst()){width.setText(""+c.getInt(0));height.setText(""+c.getInt(1));}
+            if(c.moveToFirst()){width.setText(""+c.getInt(0));height.setText(""+c.getInt(1));String oldSide=c.getString(2);for(int i=0;i<controlSides.length;i++)if(controlSides[i].equals(oldSide))side.setSelection(i);}
         }
         AlertDialog dialog=new AlertDialog.Builder(this).setTitle(title).setView(layout)
             .setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
@@ -344,7 +340,7 @@ public class MainActivity extends Activity {
             catch(Exception e){message("Введите оба размера в миллиметрах");return;}
             if(w<=0||h<=0||w>20000||h>20000){message("Проверьте размеры");return;}
             ContentValues values=new ContentValues();
-            values.put("window_id",windowId);values.put("part",part);values.put("width",w);values.put("height",h);
+            values.put("window_id",windowId);values.put("part",part);values.put("width",w);values.put("height",h);values.put("control_side",side.getSelectedItem().toString());
             db.getWritableDatabase().insertWithOnConflict("measurements",null,values,SQLiteDatabase.CONFLICT_REPLACE);
             dialog.dismiss();measureWindow(orderId,windowId);
         }));
@@ -354,10 +350,10 @@ public class MainActivity extends Activity {
     static class TapSectionsDrawing extends SectionsDrawing{
         final PartClick callback;
         final java.util.HashMap<Integer,int[]> sizes;
-        String controlSide;
+        final java.util.HashMap<Integer,String> sides;
         int selected=-1;
-        TapSectionsDrawing(Context c,ArrayList<Section> sections,java.util.HashMap<Integer,int[]> sizes,String side,PartClick callback){
-            super(c,sections);this.sizes=sizes;this.controlSide=side;this.callback=callback;
+        TapSectionsDrawing(Context c,ArrayList<Section> sections,java.util.HashMap<Integer,int[]> sizes,java.util.HashMap<Integer,String> sides,PartClick callback){
+            super(c,sections);this.sizes=sizes;this.sides=sides;this.callback=callback;
         }
         @Override protected void onDraw(Canvas canvas){
             super.onDraw(canvas);
@@ -401,7 +397,8 @@ public class MainActivity extends Activity {
                     canvas.drawText(size[1]+" мм",dimX-5*d,(top+bottom)/2,paint);
                     canvas.restore();
                 }
-                if(!controlSide.equals("Не выбрано")){
+                String controlSide=sides.get(i+1);
+                if(controlSide!=null&&!controlSide.equals("Не выбрано")){
                     float ovalX=controlSide.equals("Слева")?x+12*d:next-12*d;
                     float ovalY=top+(bottom-top)*0.76f;
                     paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(215,32,44));
@@ -453,8 +450,8 @@ public class MainActivity extends Activity {
             if(deleted>0)message("Окно удалено");else message("Окно не найдено");showOrder(orderId);}).show();}
     @Override public void onBackPressed(){if(currentOrder>0)showOrders();else super.onBackPressed();}
     static class DB extends SQLiteOpenHelper{
-        DB(Context c){super(c,"mok_zamer.db",null,5);}
-        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,PRIMARY KEY(window_id,part))");}
+        DB(Context c){super(c,"mok_zamer.db",null,6);}
+        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");}
         @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");if(oldV<5)d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,PRIMARY KEY(window_id,part))");}
     }
 }
