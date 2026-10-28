@@ -39,7 +39,18 @@ public class MainActivity extends Activity {
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side,mount_type FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
                 label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side)+"\nМонтаж: "+(c.getString(6)==null?"Не указан":c.getString(6)));
-                showSections(wid);
+                ArrayList<Section> orderSections=loadSections(wid);
+                if(!orderSections.isEmpty()){
+                    label("Чертёж замеров · вид из комнаты");
+                    root.addView(new TapSectionsDrawing(this,orderSections,loadPartSizes(wid),loadPartSides(wid),
+                        index->measurePart(id,wid,index+1)));
+                }else{
+                    label("Конструкция окна пока не создана");
+                }
+                String mountType=c.getString(6);
+                if(mountType!=null&&mountType.equals(mountTypes[0])){
+                    label("Замер всего окна: "+savedMeasurement(wid,0));
+                }
                 action("Открыть окно: конструкция → монтаж → замеры №"+wid,()->editSections(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
