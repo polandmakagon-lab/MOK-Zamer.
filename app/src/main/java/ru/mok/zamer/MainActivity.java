@@ -12,6 +12,7 @@ import android.widget.*;
 public class MainActivity extends Activity {
     DB db; LinearLayout root; int currentOrder=-1;
     final String[] systems={"Рулонные MINI","UNI-1","UNI-2","Открытая система","Кассетная система","День-ночь","Горизонтальные","Вертикальные","Плиссе","Другая система"};
+    final String[] controlSides={"Не выбрано","Слева","Справа"};
     @Override public void onCreate(Bundle b){super.onCreate(b);db=new DB(this);showOrders();}
     LinearLayout vertical(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);l.setPadding(22,18,22,18);return l;}
     void screen(String title){ScrollView s=new ScrollView(this);root=vertical();s.addView(root);setContentView(s);TextView t=new TextView(this);t.setText(title);t.setTextSize(24);t.setTextColor(Color.rgb(20,55,95));root.addView(t);}
@@ -31,34 +32,40 @@ public class MainActivity extends Activity {
     void showOrder(int id){currentOrder=id;try(Cursor c=db.getReadableDatabase().rawQuery("SELECT client,phone,address FROM orders WHERE id=?",new String[]{""+id})){
             if(!c.moveToFirst()){showOrders();return;}screen("Заказ №"+id);label("Клиент: "+c.getString(0));label("Телефон: "+c.getString(1));label("Адрес: "+c.getString(2));}
         action("+ Добавить окно",()->newWindow(id));
-        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
-            while(c.moveToNext()){final int wid=c.getInt(0);label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм");
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
+            while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
+                label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
         }action("К списку заказов",this::showOrders);
     }
     void label(String value){TextView t=new TextView(this);t.setText(value);t.setTextSize(17);t.setPadding(0,14,0,10);root.addView(t);}
-    Spinner systemSpinner(String selected){Spinner spinner=new Spinner(this);spinner.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,systems));root.addView(spinner);
-        if(selected!=null){for(int i=0;i<systems.length;i++){if(systems[i].equals(selected)){spinner.setSelection(i);break;}}}return spinner;}
+    Spinner spinner(String[] options,String selected){Spinner s=new Spinner(this);s.setAdapter(new ArrayAdapter<String>(this,android.R.layout.simple_spinner_dropdown_item,options));root.addView(s);
+        if(selected!=null){for(int i=0;i<options.length;i++){if(options[i].equals(selected)){s.setSelection(i);break;}}}return s;}
+    Spinner systemSpinner(String selected){return spinner(systems,selected);}
+    Spinner controlSpinner(String selected){label("Сторона управления (вид из комнаты лицом к окну)");return spinner(controlSides,selected);}
     boolean validSizes(EditText width,EditText height){try{int w=Integer.parseInt(width.getText().toString().trim());int h=Integer.parseInt(height.getText().toString().trim());
         if(w<=0||h<=0||w>20000||h>20000){message("Проверьте размеры");return false;}return true;
         }catch(Exception ex){message("Введите ширину и высоту в мм");return false;}}
+    boolean validSide(Spinner side){if(side.getSelectedItemPosition()==0){message("Выберите сторону управления");return false;}return true;}
     void newWindow(int orderId){currentOrder=orderId;screen("Новое окно · заказ №"+orderId);EditText room=field("Помещение / название окна");Spinner system=systemSpinner(null);
         EditText width=field("Ширина, мм");width.setInputType(2);EditText height=field("Высота, мм");height.setInputType(2);
-        action("Сохранить окно",()->{if(!validSizes(width,height))return;
-            ContentValues v=new ContentValues();v.put("order_id",orderId);v.put("room",room.getText().toString());v.put("system",system.getSelectedItem().toString());v.put("width",Integer.parseInt(width.getText().toString().trim()));v.put("height",Integer.parseInt(height.getText().toString().trim()));
+        Spinner side=controlSpinner(null);
+        action("Сохранить окно",()->{if(!validSizes(width,height)||!validSide(side))return;
+            ContentValues v=new ContentValues();v.put("order_id",orderId);v.put("room",room.getText().toString());v.put("system",system.getSelectedItem().toString());v.put("width",Integer.parseInt(width.getText().toString().trim()));v.put("height",Integer.parseInt(height.getText().toString().trim()));v.put("control_side",side.getSelectedItem().toString());
             if(db.getWritableDatabase().insert("windows",null,v)>0)showOrder(orderId);else message("Ошибка сохранения");});action("Назад",()->showOrder(orderId));
     }
     void editWindow(int orderId,int windowId){
-        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT room,system,width,height FROM windows WHERE id=? AND order_id=?",new String[]{""+windowId,""+orderId})){
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT room,system,width,height,control_side FROM windows WHERE id=? AND order_id=?",new String[]{""+windowId,""+orderId})){
             if(!c.moveToFirst()){message("Окно не найдено");showOrder(orderId);return;}
             currentOrder=orderId;screen("Изменить окно №"+windowId);
             EditText room=field("Помещение / название окна");room.setText(c.getString(0));
             Spinner system=systemSpinner(c.getString(1));
             EditText width=field("Ширина, мм");width.setInputType(2);width.setText(String.valueOf(c.getInt(2)));
             EditText height=field("Высота, мм");height.setInputType(2);height.setText(String.valueOf(c.getInt(3)));
-            action("Сохранить изменения",()->{if(!validSizes(width,height))return;
-                ContentValues v=new ContentValues();v.put("room",room.getText().toString());v.put("system",system.getSelectedItem().toString());v.put("width",Integer.parseInt(width.getText().toString().trim()));v.put("height",Integer.parseInt(height.getText().toString().trim()));
+            Spinner side=controlSpinner(c.getString(4));
+            action("Сохранить изменения",()->{if(!validSizes(width,height)||!validSide(side))return;
+                ContentValues v=new ContentValues();v.put("room",room.getText().toString());v.put("system",system.getSelectedItem().toString());v.put("width",Integer.parseInt(width.getText().toString().trim()));v.put("height",Integer.parseInt(height.getText().toString().trim()));v.put("control_side",side.getSelectedItem().toString());
                 int changed=db.getWritableDatabase().update("windows",v,"id=? AND order_id=?",new String[]{""+windowId,""+orderId});
                 if(changed>0){message("Изменения сохранены");showOrder(orderId);}else message("Не удалось сохранить изменения");});
             action("Отмена",()->showOrder(orderId));
@@ -71,8 +78,8 @@ public class MainActivity extends Activity {
             if(deleted>0)message("Окно удалено");else message("Окно не найдено");showOrder(orderId);}).show();}
     @Override public void onBackPressed(){if(currentOrder>0)showOrders();else super.onBackPressed();}
     static class DB extends SQLiteOpenHelper{
-        DB(Context c){super(c,"mok_zamer.db",null,1);}
-        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,FOREIGN KEY(order_id) REFERENCES orders(id))");}
-        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){}
+        DB(Context c){super(c,"mok_zamer.db",null,2);}
+        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");}
+        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");}
     }
 }
