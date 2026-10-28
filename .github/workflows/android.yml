@@ -31,6 +31,18 @@ jobs:
         with:
           gradle-version: '8.7'
 
+      - name: Generate Android launcher icons from MOK logo
+        run: |
+          python3 -m pip install --user cairosvg
+          python3 - <<'PY'
+          import cairosvg, os
+          svg="app/src/main/assets/mok_launcher.svg"
+          for folder, size in [("mdpi",48),("hdpi",72),("xhdpi",96),("xxhdpi",144),("xxxhdpi",192)]:
+              dest=f"app/src/main/res/mipmap-{folder}"
+              os.makedirs(dest,exist_ok=True)
+              cairosvg.svg2png(url=svg,write_to=dest+"/ic_launcher.png",output_width=size,output_height=size)
+          PY
+
       - name: Build APK
         run: gradle assembleDebug --no-daemon
 
