@@ -446,15 +446,62 @@ public class MainActivity extends Activity {
         }
         @Override public boolean performClick(){super.performClick();return true;}
     }
-    void exportDrawing(int windowId,boolean pdf,boolean share){
+    String safe(String value){return value==null||value.trim().isEmpty()?"—":value.trim();}
+    float drawWrapped(Canvas canvas,Paint paint,String text,float x,float y,float maxWidth,float lineHeight){
+        String remaining=text==null?"":text;
+        while(!remaining.isEmpty()){
+            int count=paint.breakText(remaining,true,maxWidth,null);
+            if(count<=0)break;
+            if(count<remaining.length()){
+                int space=remaining.lastIndexOf(' ',count);
+                if(space>0)count=space;
+            }
+            canvas.drawText(remaining.substring(0,count).trim(),x,y,paint);
+            remaining=remaining.substring(count).trim();
+            y+=lineHeight;
+        }
+        return y;
+    }
+    Bitmap orderSheet(int windowId){
         ArrayList<Section> sections=loadSections(windowId);
-        if(sections.isEmpty()){message("Сначала создайте окно");return;}
-        TapSectionsDrawing view=new TapSectionsDrawing(this,sections,loadPartSizes(windowId),loadPartSides(windowId),i->{});
-        int width=1200,height=600;
-        view.measure(View.MeasureSpec.makeMeasureSpec(width,View.MeasureSpec.EXACTLY),View.MeasureSpec.makeMeasureSpec(height,View.MeasureSpec.EXACTLY));
-        view.layout(0,0,width,height);
-        Bitmap bitmap=Bitmap.createBitmap(width,height,Bitmap.Config.ARGB_8888);
-        Canvas canvas=new Canvas(bitmap);canvas.drawColor(Color.WHITE);view.draw(canvas);
+        if(sections.isEmpty())return null;
+        String[] data=new String[7];
+        try(Cursor c=db.getReadableDatabase().rawQuery(
+            "SELECT o.id,o.client,o.phone,o.address,w.room,w.system,w.mount_type FROM windows w JOIN orders o ON o.id=w.order_id WHERE w.id=?",
+            new String[]{""+windowId})){
+            if(!c.moveToFirst())return null;
+            for(int i=0;i<data.length;i++)data[i]=c.getString(i);
+        }
+        int width=1200;
+        Bitmap result=Bitmap.createBitmap(width,1450,Bitmap.Config.ARGB_8888);
+        Canvas canvas=new Canvas(result);canvas.drawColor(Color.WHITE);
+        Paint paint=new Paint(Paint.ANTI_ALIAS_FLAG);
+        paint.setColor(Color.rgb(28,61,91));paint.setFakeBoldText(true);paint.setTextSize(52);
+        canvas.drawText("МОК ЗАМЕР",45,83,paint);
+        paint.setTextSize(32);paint.setFakeBoldText(false);paint.setColor(Color.DKGRAY);
+        canvas.drawText("Заказ №"+safe(data[0])+"   |   Окно №"+windowId,45,145,paint);
+        paint.setColor(Color.LTGRAY);paint.setStrokeWidth(2);canvas.drawLine(45,171,1155,171,paint);
+        paint.setColor(Color.BLACK);paint.setTextSize(31);
+        float y=220;
+        y=drawWrapped(canvas,paint,"Заказчик: "+safe(data[1]),45,y,1100,43);
+        y=drawWrapped(canvas,paint,"Телефон: "+safe(data[2]),45,y+9,1100,43);
+        y=drawWrapped(canvas,paint,"Адрес: "+safe(data[3]),45,y+9,1100,43);
+        y=drawWrapped(canvas,paint,"Комната / окно: "+safe(data[4]),45,y+9,1100,43);
+        y=drawWrapped(canvas,paint,"Система жалюзи: "+safe(data[5]),45,y+9,1100,43);
+        y=drawWrapped(canvas,paint,"Монтаж: "+safe(data[6]),45,y+9,1100,43);
+        paint.setFakeBoldText(true);paint.setColor(Color.rgb(28,61,91));paint.setTextSize(36);
+        canvas.drawText("Чертёж замера",45,y+40,paint);
+        TapSectionsDrawing drawing=new TapSectionsDrawing(this,sections,loadPartSizes(windowId),loadPartSides(windowId),i->{});
+        int drawWidth=1110,drawHeight=620;
+        drawing.measure(View.MeasureSpec.makeMeasureSpec(drawWidth,View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(drawHeight,View.MeasureSpec.EXACTLY));
+        drawing.layout(0,0,drawWidth,drawHeight);
+        canvas.save();canvas.translate(45,y+65);drawing.draw(canvas);canvas.restore();
+        return result;
+    }
+    void exportDrawing(int windowId,boolean pdf,boolean share){
+        Bitmap bitmap=orderSheet(windowId);
+        if(bitmap==null){message("Сначала создайте окно и чертёж");return;}
         Uri uri=null;
         try{
             ContentValues values=new ContentValues();
@@ -470,11 +517,9 @@ public class MainActivity extends Activity {
                 if(pdf){
                     PdfDocument doc=new PdfDocument();
                     try{
-                        PdfDocument.Page page=doc.startPage(new PdfDocument.PageInfo.Builder(1240,1754,1).create());
+                        PdfDocument.Page page=doc.startPage(new PdfDocument.PageInfo.Builder(1240,1500,1).create());
                         Canvas pc=page.getCanvas();pc.drawColor(Color.WHITE);
-                        Paint p=new Paint(3);p.setColor(Color.BLACK);p.setTextSize(42);
-                        pc.drawText("МОК Замер — окно №"+windowId,40,100,p);
-                        pc.drawBitmap(bitmap,20,170,p);
+                        pc.drawBitmap(bitmap,20,20,new Paint(Paint.FILTER_BITMAP_FLAG));
                         doc.finishPage(page);doc.writeTo(out);
                     }finally{doc.close();}
                 }else if(!bitmap.compress(Bitmap.CompressFormat.PNG,100,out))throw new Exception("Ошибка PNG");
@@ -484,8 +529,8 @@ public class MainActivity extends Activity {
             if(share){
                 Intent send=new Intent(Intent.ACTION_SEND);send.setType(pdf?"application/pdf":"image/png");
                 send.putExtra(Intent.EXTRA_STREAM,uri);send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                startActivity(Intent.createChooser(send,"Отправить чертёж"));
-            }else message(pdf?"PDF сохранён в Загрузки":"Чертёж сохранён в Галерею");
+                startActivity(Intent.createChooser(send,"Отправить лист замера"));
+            }else message(pdf?"PDF сохранён в Загрузки":"Лист замера сохранён в Галерею");
         }catch(Exception e){
             if(uri!=null)getContentResolver().delete(uri,null,null);
             message("Ошибка сохранения: "+e.getMessage());
