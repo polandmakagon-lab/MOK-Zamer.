@@ -41,6 +41,14 @@ jobs:
               dest=f"app/src/main/res/mipmap-{folder}"
               os.makedirs(dest,exist_ok=True)
               cairosvg.svg2png(url=svg,write_to=dest+"/ic_launcher.png",output_width=size,output_height=size)
+          # Render the exact MOK logo paths without the launcher text or white background.
+          import re
+          source=open(svg,encoding="utf-8").read()
+          logo_path=re.search(r'<path d="([^"]+)"',source).group(1)
+          wallpaper=f'<svg xmlns="http://www.w3.org/2000/svg" width="985" height="625" viewBox="0 0 985 625"><path d="{logo_path}" fill="#424242" fill-rule="evenodd"/></svg>'
+          dest="app/src/main/res/drawable-nodpi"
+          os.makedirs(dest,exist_ok=True)
+          cairosvg.svg2png(bytestring=wallpaper.encode("utf-8"),write_to=dest+"/mok_watermark.png",output_width=985,output_height=625)
           PY
 
       - name: Build APK
