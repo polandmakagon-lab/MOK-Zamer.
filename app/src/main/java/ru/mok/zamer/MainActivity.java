@@ -268,17 +268,30 @@ public class MainActivity extends Activity {
     }
     void measureWindow(int orderId,int windowId){
         currentOrder=orderId;
-        String mount=mountTypes[0];
-        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT mount_type FROM windows WHERE id=?",new String[]{""+windowId})){
-            if(c.moveToFirst()&&c.getString(0)!=null)mount=c.getString(0);
+        String mount=mountTypes[0],controlSide=controlSides[0];
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT mount_type,control_side FROM windows WHERE id=?",new String[]{""+windowId})){
+            if(c.moveToFirst()){if(c.getString(0)!=null)mount=c.getString(0);if(c.getString(1)!=null)controlSide=c.getString(1);}
         }
         final boolean bySections=mount.equals(mountTypes[1]);
         ArrayList<Section> sections=loadSections(windowId);
         screen("Шаг 5 · Замеры");
         label("Монтаж: "+mount+" · размеры по ширине и высоте");
+        label("Сторона управления жалюзи (вид из комнаты)");
+        Spinner sideChoice=spinner(controlSides,controlSide);
+        sideChoice.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener(){
+            public void onNothingSelected(android.widget.AdapterView<?> parent){}
+            public void onItemSelected(android.widget.AdapterView<?> parent,View view,int position,long id){
+                ContentValues v=new ContentValues();v.put("control_side",controlSides[position]);
+                db.getWritableDatabase().update("windows",v,"id=?",new String[]{""+windowId});
+                if(root!=null){for(int i=0;i<root.getChildCount();i++){
+                    View child=root.getChildAt(i);
+                    if(child instanceof TapSectionsDrawing){((TapSectionsDrawing)child).controlSide=controlSides[position];child.invalidate();}
+                }}
+            }
+        });
         if(bySections && !sections.isEmpty()){
             label("Нажмите на створку на чертеже, затем введите ширину и высоту изделия.");
-            root.addView(new TapSectionsDrawing(this,sections,loadPartSizes(windowId),index->measurePart(orderId,windowId,index+1)));
+            root.addView(new TapSectionsDrawing(this,sections,loadPartSizes(windowId),controlSide,index->measurePart(orderId,windowId,index+1)));
             label("Нажмите на секцию для ввода ширины и высоты. Для форточки используйте кнопку под схемой.");
             for(int i=0;i<sections.size();i++){
                 final int index=i+1;
@@ -341,9 +354,10 @@ public class MainActivity extends Activity {
     static class TapSectionsDrawing extends SectionsDrawing{
         final PartClick callback;
         final java.util.HashMap<Integer,int[]> sizes;
+        String controlSide;
         int selected=-1;
-        TapSectionsDrawing(Context c,ArrayList<Section> sections,java.util.HashMap<Integer,int[]> sizes,PartClick callback){
-            super(c,sections);this.sizes=sizes;this.callback=callback;
+        TapSectionsDrawing(Context c,ArrayList<Section> sections,java.util.HashMap<Integer,int[]> sizes,String side,PartClick callback){
+            super(c,sections);this.sizes=sizes;this.controlSide=side;this.callback=callback;
         }
         @Override protected void onDraw(Canvas canvas){
             super.onDraw(canvas);
@@ -368,11 +382,30 @@ public class MainActivity extends Activity {
                     canvas.drawRect(x+2*d,top+2*d,next-2*d,bottom-2*d,paint);
                 }
                 if(size!=null){
-                    paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(14,65,104));
-                    paint.setTextSize(11*d);paint.setTextAlign(Paint.Align.CENTER);
-                    float center=(x+next)/2;
-                    canvas.drawText(size[0]+" мм",center,top+(bottom-top)*0.57f,paint);
-                    canvas.drawText(size[1]+" мм",center,top+(bottom-top)*0.68f,paint);
+                    paint.setColor(Color.rgb(14,65,104));
+                    paint.setStyle(Paint.Style.STROKE);paint.setStrokeWidth(d);
+                    float dimY=top+27*d;
+                    canvas.drawLine(x+5*d,dimY,next-5*d,dimY,paint);
+                    canvas.drawLine(x+5*d,dimY-4*d,x+5*d,dimY+4*d,paint);
+                    canvas.drawLine(next-5*d,dimY-4*d,next-5*d,dimY+4*d,paint);
+                    float dimX=next-10*d;
+                    canvas.drawLine(dimX,top+39*d,dimX,bottom-7*d,paint);
+                    canvas.drawLine(dimX-4*d,top+39*d,dimX+4*d,top+39*d,paint);
+                    canvas.drawLine(dimX-4*d,bottom-7*d,dimX+4*d,bottom-7*d,paint);
+                    paint.setStyle(Paint.Style.FILL);
+                    paint.setTextAlign(Paint.Align.CENTER);
+                    paint.setTextSize(Math.min(11*d,Math.max(7*d,(next-x)/9)));
+                    canvas.drawText(size[0]+" мм",(x+next)/2,top+21*d,paint);
+                    canvas.save();
+                    canvas.rotate(-90,dimX-5*d,(top+bottom)/2);
+                    canvas.drawText(size[1]+" мм",dimX-5*d,(top+bottom)/2,paint);
+                    canvas.restore();
+                }
+                if(!controlSide.equals("Не выбрано")){
+                    float ovalX=controlSide.equals("Слева")?x+12*d:next-12*d;
+                    float ovalY=top+(bottom-top)*0.76f;
+                    paint.setStyle(Paint.Style.FILL);paint.setColor(Color.rgb(215,32,44));
+                    canvas.drawOval(ovalX-5*d,ovalY-9*d,ovalX+5*d,ovalY+9*d,paint);
                 }
                 x=next;
             }
