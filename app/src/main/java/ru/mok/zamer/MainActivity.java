@@ -39,10 +39,8 @@ public class MainActivity extends Activity {
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side,mount_type FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
                 label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side)+"\nМонтаж: "+(c.getString(6)==null?"Не указан":c.getString(6)));
-                root.addView(new WindowDrawing(this,c.getInt(3),c.getInt(4)));
                 showSections(wid);
-                action("Конструктор створок и форточек №"+wid,()->editSections(id,wid));
-                action("Монтаж и замеры №"+wid,()->chooseMount(id,wid));
+                action("Открыть окно: конструкция → монтаж → замеры №"+wid,()->editSections(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
         }action("К списку заказов",this::showOrders);
@@ -113,7 +111,7 @@ public class MainActivity extends Activity {
             sections.remove(sections.size()-1);
             renderSectionEditor(orderId,windowId,sections);
         });
-        action("Сохранить конструкцию",()->{
+        action("Далее: способ монтажа",()->{
             if(!readSections(sections,widths,types,vents))return;
             SQLiteDatabase database=db.getWritableDatabase();
             database.beginTransaction();
@@ -277,10 +275,11 @@ public class MainActivity extends Activity {
         final boolean bySections=mount.equals(mountTypes[1]);
         ArrayList<Section> sections=loadSections(windowId);
         screen("Шаг 5 · Замеры");
-        label("Монтаж: "+mount);
+        label("Монтаж: "+mount+" · размеры по ширине и высоте");
         if(bySections && !sections.isEmpty()){
-            label("Нажмите на створку на чертеже, затем введите размеры изделия.");
+            label("Нажмите на створку на чертеже, затем введите ширину и высоту изделия.");
             root.addView(new TapSectionsDrawing(this,sections,index->measurePart(orderId,windowId,index+1)));
+            label("Нажмите на секцию для ввода ширины и высоты. Для форточки используйте кнопку под схемой.");
             for(int i=0;i<sections.size();i++){
                 final int index=i+1;
                 label("Створка "+index+": "+savedMeasurement(windowId,index));
