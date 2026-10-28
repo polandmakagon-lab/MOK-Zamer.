@@ -29,19 +29,20 @@ public class MainActivity extends Activity {
         }
     }
     void newOrder(){screen("Новый заказ");EditText client=field("Клиент / компания");EditText phone=field("Телефон");EditText address=field("Адрес объекта");
-        action("Сохранить и добавить окно",()->{if(client.getText().toString().trim().isEmpty()){message("Введите имя клиента");return;}
+        action("Далее: конструктор окна",()->{if(client.getText().toString().trim().isEmpty()){message("Введите имя клиента");return;}
             ContentValues v=new ContentValues();v.put("client",client.getText().toString().trim());v.put("phone",phone.getText().toString());v.put("address",address.getText().toString());
-            long id=db.getWritableDatabase().insert("orders",null,v);if(id>0)showOrder((int)id);else message("Ошибка сохранения");});action("Назад",this::showOrders);
+            long id=db.getWritableDatabase().insert("orders",null,v);if(id>0)startWindow((int)id);else message("Ошибка сохранения");});action("Назад",this::showOrders);
     }
     void showOrder(int id){currentOrder=id;try(Cursor c=db.getReadableDatabase().rawQuery("SELECT client,phone,address FROM orders WHERE id=?",new String[]{""+id})){
             if(!c.moveToFirst()){showOrders();return;}screen("Заказ №"+id);label("Клиент: "+c.getString(0));label("Телефон: "+c.getString(1));label("Адрес: "+c.getString(2));}
-        action("+ Добавить окно",()->newWindow(id));
+        action("+ Добавить окно",()->startWindow(id));
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side,mount_type FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
                 label("Окно №"+wid+" · "+c.getString(1)+" · "+c.getString(2)+" · "+c.getInt(3)+" × "+c.getInt(4)+" мм"+"\nУправление: "+(side==null||side.isEmpty()?"Не выбрано":side)+"\nМонтаж: "+(c.getString(6)==null?"Не указан":c.getString(6)));
                 root.addView(new WindowDrawing(this,c.getInt(3),c.getInt(4)));
                 showSections(wid);
                 action("Конструктор створок и форточек №"+wid,()->editSections(id,wid));
+                action("Монтаж и замеры №"+wid,()->chooseMount(id,wid));
                 action("Изменить окно №"+wid,()->editWindow(id,wid));
                 action("Удалить окно №"+wid,()->confirmDeleteWindow(id,wid));}
         }action("К списку заказов",this::showOrders);
@@ -129,7 +130,7 @@ public class MainActivity extends Activity {
                 message("Конструкция сохранена");
             }catch(Exception e){message("Ошибка сохранения конструкции");return;}
             finally{database.endTransaction();}
-            showOrder(orderId);
+            chooseMount(orderId,windowId);
         });
         action("Назад к заказу",()->showOrder(orderId));
     }
@@ -242,6 +243,112 @@ public class MainActivity extends Activity {
             ContentValues v=new ContentValues();v.put("order_id",orderId);v.put("mount_type",mount.getSelectedItem().toString());v.put("mount_type",mount.getSelectedItem().toString());v.put("room",room.getText().toString());v.put("system",system.getSelectedItem().toString());v.put("width",Integer.parseInt(width.getText().toString().trim()));v.put("height",Integer.parseInt(height.getText().toString().trim()));v.put("control_side",side.getSelectedItem().toString());
             if(db.getWritableDatabase().insert("windows",null,v)>0)showOrder(orderId);else message("Ошибка сохранения");});action("Назад",()->showOrder(orderId));
     }
+
+    void startWindow(int orderId){
+        ContentValues v=new ContentValues();
+        v.put("order_id",orderId);v.put("room","Окно");v.put("system",systems[0]);
+        v.put("width",1000);v.put("height",1200);
+        v.put("control_side","Не выбрано");
+        long id=db.getWritableDatabase().insert("windows",null,v);
+        if(id>0)editSections(orderId,(int)id);else message("Не удалось создать окно");
+    }
+    void chooseMount(int orderId,int windowId){
+        currentOrder=orderId;
+        screen("Шаг 4 · Способ монтажа");
+        label("Куда устанавливаем жалюзи?");
+        String previous=null;
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT mount_type FROM windows WHERE id=?",new String[]{""+windowId})){
+            if(c.moveToFirst())previous=c.getString(0);
+        }
+        Spinner mount=spinner(mountTypes,previous);
+        action("Далее: замер",()->{
+            ContentValues v=new ContentValues();v.put("mount_type",mount.getSelectedItem().toString());
+            db.getWritableDatabase().update("windows",v,"id=?",new String[]{""+windowId});
+            measureWindow(orderId,windowId);
+        });
+        action("Назад к конструктору",()->editSections(orderId,windowId));
+    }
+    void measureWindow(int orderId,int windowId){
+        currentOrder=orderId;
+        String mount=mountTypes[0];
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT mount_type FROM windows WHERE id=?",new String[]{""+windowId})){
+            if(c.moveToFirst()&&c.getString(0)!=null)mount=c.getString(0);
+        }
+        final boolean bySections=mount.equals(mountTypes[1]);
+        ArrayList<Section> sections=loadSections(windowId);
+        screen("Шаг 5 · Замеры");
+        label("Монтаж: "+mount);
+        if(bySections && !sections.isEmpty()){
+            label("Нажмите на створку на чертеже, затем введите размеры изделия.");
+            root.addView(new TapSectionsDrawing(this,sections,index->measurePart(orderId,windowId,index+1)));
+            for(int i=0;i<sections.size();i++){
+                final int index=i+1;
+                label("Створка "+index+": "+savedMeasurement(windowId,index));
+                if(sections.get(i).ventHeight>0){
+                    final int ventKey=100+index;
+                    action("Форточка "+index+" · "+savedMeasurement(windowId,ventKey),()->measurePart(orderId,windowId,ventKey));
+                }
+            }
+        }else{
+            label("Нажмите на окно для ввода общего размера.");
+            WindowDrawing drawing=new WindowDrawing(this,1000,1200);
+            drawing.setOnClickListener(v->measurePart(orderId,windowId,0));
+            root.addView(drawing);
+            label("Всё окно: "+savedMeasurement(windowId,0));
+            action("Измерить всё окно",()->measurePart(orderId,windowId,0));
+        }
+        action("Изменить конструкцию",()->editSections(orderId,windowId));
+        action("Изменить способ монтажа",()->chooseMount(orderId,windowId));
+        action("Готово · к заказу",()->showOrder(orderId));
+    }
+    String savedMeasurement(int windowId,int part){
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height FROM measurements WHERE window_id=? AND part=?",
+                new String[]{""+windowId,""+part})){
+            if(c.moveToFirst())return c.getInt(0)+" × "+c.getInt(1)+" мм";
+        }
+        return "не измерено";
+    }
+    void measurePart(int orderId,int windowId,int part){
+        String title=part==0?"Всё окно":part>100?"Форточка "+(part-100):"Створка "+part;
+        LinearLayout layout=new LinearLayout(this);layout.setOrientation(1);layout.setPadding(32,12,32,8);
+        EditText width=new EditText(this);width.setHint("Ширина изделия, мм");width.setInputType(2);layout.addView(width);
+        EditText height=new EditText(this);height.setHint("Высота изделия, мм");height.setInputType(2);layout.addView(height);
+        try(Cursor c=db.getReadableDatabase().rawQuery("SELECT width,height FROM measurements WHERE window_id=? AND part=?",
+                new String[]{""+windowId,""+part})){
+            if(c.moveToFirst()){width.setText(""+c.getInt(0));height.setText(""+c.getInt(1));}
+        }
+        AlertDialog dialog=new AlertDialog.Builder(this).setTitle(title).setView(layout)
+            .setNegativeButton("Отмена",null).setPositiveButton("Сохранить",null).create();
+        dialog.setOnShowListener(v->dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(button->{
+            int w,h;
+            try{w=Integer.parseInt(width.getText().toString());h=Integer.parseInt(height.getText().toString());}
+            catch(Exception e){message("Введите оба размера в миллиметрах");return;}
+            if(w<=0||h<=0||w>20000||h>20000){message("Проверьте размеры");return;}
+            ContentValues values=new ContentValues();
+            values.put("window_id",windowId);values.put("part",part);values.put("width",w);values.put("height",h);
+            db.getWritableDatabase().insertWithOnConflict("measurements",null,values,SQLiteDatabase.CONFLICT_REPLACE);
+            dialog.dismiss();measureWindow(orderId,windowId);
+        }));
+        dialog.show();
+    }
+    interface PartClick {void selected(int index);}
+    static class TapSectionsDrawing extends SectionsDrawing{
+        final PartClick callback;
+        TapSectionsDrawing(Context c,ArrayList<Section> sections,PartClick callback){super(c,sections);this.callback=callback;}
+        @Override public boolean onTouchEvent(android.view.MotionEvent event){
+            if(event.getAction()==MotionEvent.ACTION_UP){
+                float d=getResources().getDisplayMetrics().density;
+                float x=event.getX(),left=12*d,right=getWidth()-12*d;
+                if(x<left||x>right)return true;
+                float total=0;for(Section sec:sections)total+=sec.width;
+                float pos=(x-left)/(right-left)*total,acc=0;
+                for(int i=0;i<sections.size();i++){acc+=sections.get(i).width;if(pos<=acc){callback.selected(i);break;}}
+                performClick();return true;
+            }
+            return true;
+        }
+        @Override public boolean performClick(){super.performClick();return true;}
+    }
     void editWindow(int orderId,int windowId){
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT room,system,width,height,control_side,mount_type FROM windows WHERE id=? AND order_id=?",new String[]{""+windowId,""+orderId})){
             if(!c.moveToFirst()){message("Окно не найдено");showOrder(orderId);return;}
@@ -263,12 +370,12 @@ public class MainActivity extends Activity {
     void confirmDeleteWindow(int orderId,int windowId){new AlertDialog.Builder(this).setTitle("Удалить окно №"+windowId+"?")
         .setMessage("Окно будет удалено из заказа. Отменить удаление нельзя.")
         .setNegativeButton("Отмена",(d,w)->d.dismiss())
-        .setPositiveButton("Удалить",(d,w)->{db.getWritableDatabase().delete("sections","window_id=?",new String[]{""+windowId});int deleted=db.getWritableDatabase().delete("windows","id=? AND order_id=?",new String[]{""+windowId,""+orderId});
+        .setPositiveButton("Удалить",(d,w)->{db.getWritableDatabase().delete("sections","window_id=?",new String[]{""+windowId});db.getWritableDatabase().delete("measurements","window_id=?",new String[]{""+windowId});int deleted=db.getWritableDatabase().delete("windows","id=? AND order_id=?",new String[]{""+windowId,""+orderId});
             if(deleted>0)message("Окно удалено");else message("Окно не найдено");showOrder(orderId);}).show();}
     @Override public void onBackPressed(){if(currentOrder>0)showOrders();else super.onBackPressed();}
     static class DB extends SQLiteOpenHelper{
-        DB(Context c){super(c,"mok_zamer.db",null,4);}
-        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");}
-        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");}
+        DB(Context c){super(c,"mok_zamer.db",null,5);}
+        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,PRIMARY KEY(window_id,part))");}
+        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");if(oldV<5)d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,PRIMARY KEY(window_id,part))");}
     }
 }
