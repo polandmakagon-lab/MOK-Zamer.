@@ -22,13 +22,37 @@ public class MainActivity extends Activity {
     final String[] systems={"Рулонные MINI","UNI-1","UNI-2","Открытая система","Кассетная система","День-ночь","Горизонтальные","Вертикальные","Плиссе","Другая система"};
     final String[] controlSides={"Не выбрано","Слева","Справа"};
     final String[] mountTypes={"На оконный проём","На створки"};
-    @Override public void onCreate(Bundle b){super.onCreate(b);db=new DB(this);showOrders();}
+    private String visitRef;
+    @Override public void onCreate(Bundle b){
+        super.onCreate(b);
+        db=new DB(this);
+        visitRef=getIntent().getStringExtra("visit_ref");
+        if (visitRef == null || !visitRef.matches("[a-f0-9]{32}")) { finish(); return; }
+        SQLiteDatabase database=db.getWritableDatabase();
+        int id;
+        database.beginTransaction();
+        try {
+            try (Cursor row=database.rawQuery("SELECT id FROM orders WHERE order_ref=?",new String[]{visitRef})) {
+                if (row.moveToFirst()) id=row.getInt(0);
+                else {
+                    ContentValues values=new ContentValues();
+                    values.put("order_ref",visitRef);
+                    values.put("client",getIntent().getStringExtra("visit_name"));
+                    values.put("address",getIntent().getStringExtra("visit_address"));
+                    values.put("created_at_ms",System.currentTimeMillis());
+                    id=(int)database.insertOrThrow("orders",null,values);
+                }
+            }
+            database.setTransactionSuccessful();
+        } finally { database.endTransaction(); }
+        showOrder(id);
+    }
     LinearLayout vertical(){LinearLayout l=new LinearLayout(this);l.setOrientation(1);l.setPadding(22,18,22,18);return l;}
     void screen(String title){ScrollView s=new ScrollView(this);root=vertical();root.setPadding(22,22,22,18);s.addView(root);FrameLayout frame=new FrameLayout(this);frame.setBackgroundColor(Color.WHITE);ImageView watermark=new ImageView(this);watermark.setImageResource(ru.mok.zamer.R.drawable.mok_watermark);watermark.setScaleType(ImageView.ScaleType.FIT_CENTER);watermark.setAlpha(0.15f);FrameLayout.LayoutParams bgParams=new FrameLayout.LayoutParams(-1,-1);bgParams.setMargins(20,80,20,80);frame.addView(watermark,bgParams);frame.addView(s,new FrameLayout.LayoutParams(-1,-1));s.setBackgroundColor(Color.TRANSPARENT);root.setBackgroundColor(Color.TRANSPARENT);setContentView(frame);TextView t=new TextView(this);t.setText(title);t.setTextSize(24);t.setTextColor(Color.rgb(20,55,95));t.setPadding(0,28,0,16);root.addView(t);if(title.equals("МОК Замер · Заказы")){View gap=new View(this);root.addView(gap,new LinearLayout.LayoutParams(1,(int)(getResources().getDisplayMetrics().ydpi*2.5f/2.54f)));}}
     EditText field(String hint){EditText e=new EditText(this);e.setHint(hint);e.setSingleLine(true);root.addView(e);return e;}
     void action(String label,Runnable r){Button b=new Button(this);b.setText(label);root.addView(b);b.setOnClickListener(v->r.run());}
     void message(String s){Toast.makeText(this,s,Toast.LENGTH_LONG).show();}
-    void showOrders(){currentOrder=-1;screen("МОК Замер · Заказы");action("+ Новый заказ",this::newOrder);
+    void showOrders(){if(visitRef!=null){finish();return;}currentOrder=-1;screen("МОК Замер · Заказы");action("+ Новый заказ",this::newOrder);
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,client,phone FROM orders ORDER BY id DESC",null)){
             while(c.moveToNext()){final int id=c.getInt(0);action("№"+id+" · "+c.getString(1)+" · "+c.getString(2),()->showOrder(id));}
         }
@@ -41,7 +65,7 @@ public class MainActivity extends Activity {
             long id=db.getWritableDatabase().insert("orders",null,v);if(id>0)startWindow((int)id);else message("Ошибка сохранения");});action("Назад",this::showOrders);
     }
     void showOrder(int id){currentOrder=id;try(Cursor c=db.getReadableDatabase().rawQuery("SELECT client,phone,address FROM orders WHERE id=?",new String[]{""+id})){
-            if(!c.moveToFirst()){showOrders();return;}screen("Заказ №"+id);label("Клиент: "+c.getString(0));label("Телефон: "+c.getString(1));label("Адрес: "+c.getString(2));}
+            if(!c.moveToFirst()){showOrders();return;}screen("Заказ №"+id);label("Клиент: "+c.getString(0));if(visitRef==null)label("Телефон: "+c.getString(1));label("Адрес: "+c.getString(2));}
         action("+ Добавить окно",()->startWindow(id));
         try(Cursor c=db.getReadableDatabase().rawQuery("SELECT id,room,system,width,height,control_side,mount_type FROM windows WHERE order_id=? ORDER BY id",new String[]{""+id})){
             while(c.moveToNext()){final int wid=c.getInt(0);String side=c.getString(5);
@@ -491,7 +515,7 @@ public class MainActivity extends Activity {
         paint.setColor(Color.BLACK);paint.setTextSize(31);
         float y=220;
         y=drawWrapped(canvas,paint,"Заказчик: "+safe(data[1]),45,y,1100,43);
-        y=drawWrapped(canvas,paint,"Телефон: "+safe(data[2]),45,y+9,1100,43);
+        if(visitRef==null)y=drawWrapped(canvas,paint,"Телефон: "+safe(data[2]),45,y+9,1100,43);
         y=drawWrapped(canvas,paint,"Адрес: "+safe(data[3]),45,y+9,1100,43);
         y=drawWrapped(canvas,paint,"Комната / окно: "+safe(data[4]),45,y+9,1100,43);
         y=drawWrapped(canvas,paint,"Система жалюзи: "+safe(data[5]),45,y+9,1100,43);
