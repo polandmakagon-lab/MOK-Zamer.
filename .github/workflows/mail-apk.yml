@@ -1,0 +1,46 @@
+name: Mail the Android APK
+on:
+  workflow_run:
+    workflows: ["Build Android APK"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      build_run:
+        description: "GitHub Actions run ID of the Android build (default is build 35)"
+        required: true
+        default: "46064687204"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  mail:
+    if: >-
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
+      (github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: mail-apk-${{ github.event.workflow_run.id || inputs.build_run }}
+      cancel-in-progress: false
+    environment: mok-apk-mail
+    steps:
+      - name: Check out the trusted mail workflow
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Send APK as an attachment
+        env:
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.build_run }}
+          GH_TOKEN: ${{ github.token }}
+          MOK_MAILRU_LOGIN: ${{ secrets.MOK_MAILRU_LOGIN }}
+          MOK_MAILRU_PASSWORD: ${{ secrets.MOK_MAILRU_PASSWORD }}
+        run: |
+          if [[ -z "$MOK_MAILRU_LOGIN" || -z "$MOK_MAILRU_PASSWORD" ]]; then
+            echo 'Delivery is not configured.'
+            exit 0
+          fi
+          python3 .github/scripts/mail_apk.py "$RUN_ID"
