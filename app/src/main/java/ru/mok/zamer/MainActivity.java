@@ -36,6 +36,8 @@ public class MainActivity extends Activity {
     void newOrder(){screen("Новый заказ");EditText client=field("Клиент / компания");EditText phone=field("Телефон");EditText address=field("Адрес объекта");
         action("Далее: конструктор окна",()->{if(client.getText().toString().trim().isEmpty()){message("Введите имя клиента");return;}
             ContentValues v=new ContentValues();v.put("client",client.getText().toString().trim());v.put("phone",phone.getText().toString());v.put("address",address.getText().toString());
+            v.put("order_ref", java.util.UUID.randomUUID().toString().replace("-", ""));
+            v.put("created_at_ms", System.currentTimeMillis());
             long id=db.getWritableDatabase().insert("orders",null,v);if(id>0)startWindow((int)id);else message("Ошибка сохранения");});action("Назад",this::showOrders);
     }
     void showOrder(int id){currentOrder=id;try(Cursor c=db.getReadableDatabase().rawQuery("SELECT client,phone,address FROM orders WHERE id=?",new String[]{""+id})){
@@ -362,7 +364,12 @@ public class MainActivity extends Activity {
             if(w<=0||h<=0||w>20000||h>20000){message("Проверьте размеры");return;}
             ContentValues values=new ContentValues();
             values.put("window_id",windowId);values.put("part",part);values.put("width",w);values.put("height",h);values.put("control_side",side.getSelectedItem().toString());
-            db.getWritableDatabase().insertWithOnConflict("measurements",null,values,SQLiteDatabase.CONFLICT_REPLACE);
+            values.put("saved_at_ms", System.currentTimeMillis());
+            if (db.getWritableDatabase().insertWithOnConflict("measurements", null, values,
+                    SQLiteDatabase.CONFLICT_REPLACE) == -1) {
+                message("Не удалось сохранить замер");
+                return;
+            }
             dialog.dismiss();measureWindow(orderId,windowId);
         }));
         dialog.show();
@@ -561,8 +568,32 @@ public class MainActivity extends Activity {
             if(deleted>0)message("Окно удалено");else message("Окно не найдено");showOrder(orderId);}).show();}
     @Override public void onBackPressed(){if(currentOrder>0)showOrders();else super.onBackPressed();}
     static class DB extends SQLiteOpenHelper{
-        DB(Context c){super(c,"mok_zamer.db",null,6);}
-        @Override public void onCreate(SQLiteDatabase d){d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT)");d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");}
-        @Override public void onUpgrade(SQLiteDatabase d,int oldV,int newV){if(oldV<2)d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");if(oldV<3)d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");if(oldV<4)d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");if(oldV<5)d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");if(oldV>=5&&oldV<6)d.execSQL("ALTER TABLE measurements ADD COLUMN control_side TEXT");}
+        DB(Context c){super(c,"mok_zamer.db",null,7);}
+        @Override public void onCreate(SQLiteDatabase d) {
+            d.execSQL("CREATE TABLE orders(id INTEGER PRIMARY KEY AUTOINCREMENT,client TEXT NOT NULL,phone TEXT,address TEXT,order_ref TEXT NOT NULL,created_at_ms INTEGER)");
+            d.execSQL("CREATE TABLE windows(id INTEGER PRIMARY KEY AUTOINCREMENT,order_id INTEGER NOT NULL,room TEXT,system TEXT,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,mount_type TEXT,FOREIGN KEY(order_id) REFERENCES orders(id))");
+            d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");
+            d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,saved_at_ms INTEGER,PRIMARY KEY(window_id,part))");
+            createOrderRefIndex(d);
+        }
+
+        @Override public void onUpgrade(SQLiteDatabase d, int oldV, int newV) {
+            if (oldV < 2) d.execSQL("ALTER TABLE windows ADD COLUMN control_side TEXT");
+            if (oldV < 3) d.execSQL("ALTER TABLE windows ADD COLUMN mount_type TEXT");
+            if (oldV < 4) d.execSQL("CREATE TABLE sections(id INTEGER PRIMARY KEY AUTOINCREMENT,window_id INTEGER NOT NULL,position INTEGER NOT NULL,width INTEGER NOT NULL,type TEXT NOT NULL,vent_height INTEGER NOT NULL DEFAULT 0)");
+            if (oldV < 5) d.execSQL("CREATE TABLE measurements(window_id INTEGER NOT NULL,part INTEGER NOT NULL,width INTEGER NOT NULL,height INTEGER NOT NULL,control_side TEXT,PRIMARY KEY(window_id,part))");
+            if (oldV >= 5 && oldV < 6) d.execSQL("ALTER TABLE measurements ADD COLUMN control_side TEXT");
+            if (oldV < 7) {
+                d.execSQL("ALTER TABLE orders ADD COLUMN order_ref TEXT NOT NULL DEFAULT ''");
+                d.execSQL("UPDATE orders SET order_ref = lower(hex(randomblob(16)))");
+                d.execSQL("ALTER TABLE orders ADD COLUMN created_at_ms INTEGER");
+                d.execSQL("ALTER TABLE measurements ADD COLUMN saved_at_ms INTEGER");
+                createOrderRefIndex(d);
+            }
+        }
+
+        private static void createOrderRefIndex(SQLiteDatabase d) {
+            d.execSQL("CREATE UNIQUE INDEX orders_by_ref ON orders(order_ref)");
+        }
     }
 }
