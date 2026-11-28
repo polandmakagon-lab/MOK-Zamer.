@@ -3,9 +3,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [diagnostics/visits-mobile-connection]
   workflow_dispatch:
 
 jobs:
@@ -55,6 +53,94 @@ jobs:
 
       - name: Build APK
         run: gradle assembleDebug --no-daemon
+
+      - name: Prepare an Android test device
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
+          package='system-images;android-33;default;x86_64'
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          df -h / "$ANDROID_HOME"
+          "$sdk/sdkmanager" --install 'emulator' "$package" > /dev/null
+          echo no | "$sdk/avdmanager" create avd --force --name mok-queue --package "$package" --path "$ANDROID_AVD_HOME/mok-queue.avd"
+          avdhome="$ANDROID_AVD_HOME/mok-queue.avd"
+          sed -i '/^disk.dataPartition.size=/d' "$avdhome/config.ini"
+          echo 'disk.dataPartition.size=1536M' >> "$avdhome/config.ini"
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+      - name: Test both native requests with mobile data disabled and enabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          export ANDROID_SERIAL=emulator-5554
+          adb start-server
+          df -h /
+          "$ANDROID_HOME/emulator/emulator" -list-avds
+          "$ANDROID_HOME/emulator/emulator" -port 5554 -no-metrics -avd mok-queue -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader -cores 2 -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          emupid=$!
+          trap 'tail -45 "$RUNNER_TEMP/emulator.log"; kill "$emupid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 120); do
+            if [[ $(adb get-state 2>/dev/null || true) == device ]]; then break; fi
+            kill -0 "$emupid" || exit 1
+            sleep 2
+          done
+          adb get-state
+          booted=''
+          for i in $(seq 1 100); do
+            booted=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            if [[ $booted == 1 ]]; then break; fi
+            if ! kill -0 "$emupid" 2>/dev/null; then tail -20 "$RUNNER_TEMP/emulator.log"; exit 1; fi
+            sleep 2
+          done
+          test "$booted" = 1
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          app=ru.mok.zamer.netcheck
+          activity="$app/ru.mok.zamer.VisitsActivity"
+          apk=app/build/outputs/apk/debug/app-debug.apk
+          adb install "$apk"
+          adb shell svc wifi disable
+          adb shell svc data disable
+          adb shell am start -W -n "$activity"
+          screen="$RUNNER_TEMP/screen.xml"
+          dump_screen() {
+            adb shell uiautomator dump /sdcard/net-check.xml >/dev/null 2>&1 && adb exec-out cat /sdcard/net-check.xml > "$screen"
+          }
+          click_check() {
+            dump_screen
+            xy=$(python3 -c 'import re,sys,xml.etree.ElementTree as E; btn=next(n for n in E.parse(sys.argv[1]).iter("node") if n.get("text")=="Проверить связь"); x,y,r,b=map(int,re.findall(r"\d+",btn.get("bounds"))); print((x+r)//2,(y+b)//2)' "$screen")
+            adb shell input tap $xy
+          }
+          wait_text() {
+            for i in $(seq 1 32); do
+              if dump_screen && grep -Fq "$1" "$screen"; then return 0; fi
+              sleep 1
+            done
+            python3 -c 'import sys,xml.etree.ElementTree as E; print([n.get("text") for n in E.parse(sys.argv[1]).iter("node") if n.get("text")])' "$screen"
+            return 1
+          }
+          wait_text "Проверить связь"
+          for i in $(seq 1 15); do
+            if ! adb shell ip route get 212.193.102.11 2>/dev/null | grep -q ' dev '; then break; fi
+            sleep 1
+          done
+          click_check
+          wait_text "Очередь · открытие соединения"
+          grep -Fq 'Вход · открытие соединения' "$screen"
+          echo "Both requests reported the offline failure phase."
+          adb shell svc data enable
+          for i in $(seq 1 30); do
+            if adb shell ip route get 212.193.102.11 2>/dev/null | grep -q ' dev '; then break; fi
+            sleep 1
+          done
+          click_check
+          wait_text "Очередь · сервер ответил (HTTP 401)"
+          grep -Fq 'Вход · сервер ответил (HTTP 400)' "$screen"
+          echo "Android received the expected distinct responses from the public worker login and jobs endpoints."
 
       - name: Save APK
         uses: actions/upload-artifact@v4

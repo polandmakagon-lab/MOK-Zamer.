@@ -10,6 +10,8 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.os.*;
 import android.text.InputType;
 import android.view.Gravity;
@@ -24,6 +26,7 @@ public class VisitsActivity extends Activity {
     private SharedPreferences prefs;
     private LinearLayout layout;
     private TextView feedback;
+    private TextView loadingAssignments;
     private ImageButton locationStatus;
     private static final int TEAL = Color.rgb(20, 103, 85);
     private static final String DEFAULT_SERVER = "https://212.193.102.11/blinds-visits/";
@@ -52,6 +55,7 @@ public class VisitsActivity extends Activity {
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
     private void screen(String name,String title){
         locationStatus=null;
+        loadingAssignments=null;
         page=name;screenVersion++;refreshing=false;
         ScrollView scroll=new ScrollView(this);layout=new LinearLayout(this);layout.setOrientation(1);
         layout.setPadding(dp(18),dp(24),dp(18),dp(24));scroll.addView(layout);setContentView(scroll);
@@ -74,7 +78,12 @@ public class VisitsActivity extends Activity {
                     if(WorkLocation.running)WorkLocation.stop(this);
                     prefs.edit().remove("token").apply();login();
                 }
-                note(e instanceof VisitsApi.Failure?e.getMessage():"Нет связи с сервером МОК");
+                if (loadingAssignments != null && action.equals("worker/jobs")) {
+                    loadingAssignments.setVisibility(View.GONE);
+                }
+                String operation = action.equals("worker/login") ? "Вход"
+                        : action.equals("worker/jobs") ? "Очередь" : "Запрос";
+                note(operation + " · " + VisitsApi.describe(e));
             });}
         });
     }
@@ -96,11 +105,64 @@ public class VisitsActivity extends Activity {
                 queue();
             });
         });
+        Button check = new Button(this);
+        check.setText("Проверить связь");
+        check.setAllCaps(false);
+        layout.addView(check);
+        check.setOnClickListener(v -> checkConnection(server.getText().toString(), check));
     }
+    private String checkEndpoint(String base, String action, int expected, String expectedMessage) {
+        try {
+            VisitsApi.post(base, "", action, new JSONObject());
+            return "неожиданный ответ HTTP 200";
+        } catch (VisitsApi.Failure error) {
+            if (error.status == expected && expectedMessage.equals(error.getMessage())) {
+                return "сервер ответил (HTTP " + expected + ")";
+            }
+            return VisitsApi.describe(error);
+        } catch (Exception error) {
+            return VisitsApi.describe(error);
+        }
+    }
+
+    private String connectionType() {
+        ConnectivityManager manager = getSystemService(ConnectivityManager.class);
+        NetworkCapabilities caps = manager.getNetworkCapabilities(manager.getActiveNetwork());
+        if (caps == null) return "нет активной сети";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) return "VPN";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return "Wi-Fi";
+        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return "мобильная сеть";
+        return "другая сеть";
+    }
+
+    private void checkConnection(String address, Button retry) {
+        String base;
+        try {
+            base = VisitsApi.base(address);
+        } catch (Exception error) {
+            note("Проверьте HTTPS-адрес кабинета");
+            return;
+        }
+        int generation = screenVersion;
+        String network = connectionType();
+        retry.setEnabled(false);
+        note("Проверяем вход и очередь…");
+        net.execute(() -> {
+            String login = checkEndpoint(base, "worker/login", 400, "Проверьте обязательные поля");
+            String jobs = checkEndpoint(base, "worker/jobs", 401, "Войдите в программу");
+            runOnUiThread(() -> {
+                if (isDestroyed() || generation != screenVersion) return;
+                retry.setEnabled(true);
+                note(network + " · Android " + Build.VERSION.RELEASE + "\nСервер " + Uri.parse(base).getEncodedAuthority()
+                        + "\nВход · " + login + "\nОчередь · " + jobs);
+            });
+        });
+    }
+
     private void queue(){
         selected=null;screen("queue","Мои выезды");
         showWorkerHeader();
-        label("Загрузка назначений…");showQueueActions();refresh(true);handler.post(this::checkWorkLocation);
+        loadingAssignments=label("Загрузка назначений…");showQueueActions();refresh(true);handler.post(this::checkWorkLocation);
     }
     private void logout(){
         prefs.edit().putBoolean(WorkLocation.consentKey(this),false).apply();
