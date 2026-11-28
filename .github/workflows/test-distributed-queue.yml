@@ -1,0 +1,79 @@
+name: Verify the distributed visits APK on Android
+on:
+  push:
+    branches: [diagnostics/honor-queue-20261128]
+    paths: ['.github/workflows/test-distributed-queue.yml']
+permissions:
+  actions: read
+jobs:
+  emulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 14
+    steps:
+      - name: Download the exact mailed APK
+        uses: actions/download-artifact@v4
+        with:
+          name: MOK-Zamer-APK
+          run-id: 46117859529
+          github-token: ${{ github.token }}
+          path: apk
+      - name: Verify APK and prepare the emulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '3dc0ac014fcf0296ef472314f6f44f0123e2e495c26834cc0f91f1897e8e9834  apk/app-debug.apk' | sha256sum --check
+          package='system-images;android-33;google_apis;x86_64'
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          "$sdk/sdkmanager" --install 'emulator' "$package" > /dev/null
+          echo no | "$sdk/avdmanager" create avd --force --name mok-queue --package "$package"
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+      - name: Exercise the queue with an expired test session over Android mobile data
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$ANDROID_HOME/platform-tools:$PATH"
+          "$ANDROID_HOME/emulator/emulator" -avd mok-queue -no-window -no-snapshot -no-audio -no-boot-anim -gpu swiftshader_indirect -cores 2 -memory 2048 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          emupid=$!
+          trap 'kill "$emupid" 2>/dev/null || true' EXIT
+          timeout 160 adb wait-for-device
+          booted=''
+          for i in $(seq 1 100); do
+            booted=$(adb shell getprop sys.boot_completed | tr -d '\r')
+            if [[ $booted == 1 ]]; then break; fi
+            if ! kill -0 "$emupid" 2>/dev/null; then tail -20 "$RUNNER_TEMP/emulator.log"; exit 1; fi
+            sleep 2
+          done
+          test "$booted" = 1
+          adb shell input keyevent KEYCODE_WAKEUP
+          adb shell wm dismiss-keyguard
+          adb shell svc wifi disable
+          adb shell svc data enable
+          adb install apk/app-debug.apk
+          app=ru.mok.zamer
+          adb shell run-as "$app" mkdir -p shared_prefs
+          adb shell -T run-as "$app" tee shared_prefs/mok_visits.xml > /dev/null <<'XML'
+          <?xml version="1.0" encoding="utf-8" standalone="yes"?>
+          <map>
+            <string name="base">https://212.193.102.11/blinds-visits/</string>
+            <string name="token">expired-ui-test-not-a-real-session</string>
+            <string name="login">queue-test</string><string name="name">Тест очереди</string>
+            <boolean name="share24:https://212.193.102.11/blinds-visits/|queue-test" value="false" />
+          </map>
+          XML
+          adb shell am start -W -n "$app/.VisitsActivity"
+          for i in $(seq 1 12); do
+            if adb shell uiautomator dump /sdcard/queue-test.xml >/dev/null 2>&1; then
+              adb exec-out cat /sdcard/queue-test.xml > "$RUNNER_TEMP/screen.xml"
+              if grep -Fq 'Войдите в программу' "$RUNNER_TEMP/screen.xml"; then
+                echo 'Confirmed: build 39 received the live queue API session-expired message in the Android UI.'
+                exit 0
+              fi
+              if grep -Fq 'Нет связи с сервером МОК' "$RUNNER_TEMP/screen.xml"; then
+                echo 'The distributed APK displayed a transport error.'
+                exit 1
+              fi
+            fi
+            sleep 1
+          done
+          python3 -c 'import os,xml.etree.ElementTree as E; root=E.parse(os.environ["RUNNER_TEMP"]+"/screen.xml"); print([e.get("text") for e in root.iter("node") if e.get("text") and e.get("package")=="ru.mok.zamer"])'
+          exit 1
