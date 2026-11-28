@@ -4,10 +4,15 @@ import android.Manifest;
 import android.app.*;
 import android.content.*;
 import android.content.pm.PackageManager;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.RippleDrawable;
 import android.net.Uri;
 import android.os.*;
 import android.text.InputType;
+import android.view.Gravity;
 import android.view.View;
 import android.widget.*;
 import org.json.*;
@@ -19,7 +24,9 @@ public class VisitsActivity extends Activity {
     private SharedPreferences prefs;
     private LinearLayout layout;
     private TextView feedback;
-    private TextView locationStatus;
+    private ImageButton locationStatus;
+    private static final int TEAL = Color.rgb(20, 103, 85);
+    private static final String DEFAULT_SERVER = "https://212.193.102.11/blinds-visits/";
     private boolean configuring, starting, waitingToLogout;
     private final SharedPreferences.OnSharedPreferenceChangeListener locationChanges =
         (settings, key) -> {
@@ -73,7 +80,9 @@ public class VisitsActivity extends Activity {
     }
     private void login(){
         screen("login","МОК Замер · вход");
-        EditText server=input("HTTPS-адрес кабинета МОК",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI,prefs.getString("base",""));
+        String savedServer = prefs.getString("base", "");
+        EditText server=input("HTTPS-адрес кабинета МОК",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_URI,
+                savedServer.trim().isEmpty() ? DEFAULT_SERVER : savedServer);
         EditText login=input("Логин замерщика",InputType.TYPE_CLASS_TEXT,prefs.getString("login",""));
         EditText pw=input("Пароль",InputType.TYPE_CLASS_TEXT|InputType.TYPE_TEXT_VARIATION_PASSWORD,"");
         button("Войти",()->{
@@ -90,9 +99,8 @@ public class VisitsActivity extends Activity {
     }
     private void queue(){
         selected=null;screen("queue","Мои выезды");
-        label(prefs.getString("name",""));showLocationStatus();
-        button("Обновить очередь",()->refresh(true));button("Выйти",this::logout);
-        label("Загрузка назначений…");refresh(true);handler.post(this::checkWorkLocation);
+        showWorkerHeader();
+        label("Загрузка назначений…");showQueueActions();refresh(true);handler.post(this::checkWorkLocation);
     }
     private void logout(){
         prefs.edit().putBoolean(WorkLocation.consentKey(this),false).apply();
@@ -103,18 +111,54 @@ public class VisitsActivity extends Activity {
         }
         request("logout",new JSONObject(),r->{prefs.edit().remove("token").remove("name").remove(WorkLocation.consentKey(this)).apply();login();});
     }
-    private void showLocationStatus(){
-        locationStatus=label("");
-        locationStatus.setTextSize(14);
-        locationStatus.setOnClickListener(v->showSharingChoice());
+    private void showWorkerHeader() {
+        LinearLayout row = new LinearLayout(this);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        layout.addView(row);
+        TextView name = new TextView(this);
+        name.setText(prefs.getString("name", ""));
+        name.setTextSize(16);
+        row.addView(name, new LinearLayout.LayoutParams(0, -2, 1));
+
+        locationStatus = new ImageButton(this);
+        locationStatus.setScaleType(ImageView.ScaleType.CENTER);
+        android.util.TypedValue background = new android.util.TypedValue();
+        getTheme().resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, background, true);
+        locationStatus.setBackgroundResource(background.resourceId);
+        row.addView(locationStatus, dp(48), dp(48));
+        locationStatus.setOnClickListener(v -> showSharingChoice());
         updateLocationStatus();
     }
     private void updateLocationStatus(){
         if(locationStatus==null)return;
         boolean enabled=WorkLocation.consented(this);
         boolean active=enabled && WorkLocation.running && WorkLocation.allowed(this) && WorkLocation.gpsEnabled(this) && !prefs.getBoolean("closing",false);
-        locationStatus.setText(active ? "● Геолокация · маршрут доступен администратору"
-                : enabled ? "○ Геолокация приостановлена" : "○ Геолокация выключена");
+        locationStatus.setImageResource(active ? R.drawable.ic_location_active : R.drawable.ic_location_idle);
+        String description = active ? "Геолокация включена · маршрут доступен администратору"
+                : enabled ? "Геолокация приостановлена" : "Геолокация выключена";
+        locationStatus.setContentDescription(description);
+        locationStatus.setTooltipText(description);
+    }
+    private void showQueueActions() {
+        styleQueueButton(button("Обновить очередь", () -> refresh(true)), true);
+        styleQueueButton(button("Выйти", this::logout), false);
+    }
+    private void styleQueueButton(Button action, boolean primary) {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(12));
+        shape.setColor(primary ? TEAL : Color.WHITE);
+        if (!primary) shape.setStroke(dp(1), Color.rgb(165, 188, 181));
+        action.setBackgroundTintList(null);
+        action.setBackground(new RippleDrawable(ColorStateList.valueOf(
+                primary ? 0x33FFFFFF : 0x20146755), shape, null));
+        action.setStateListAnimator(null);
+        action.setTextColor(primary ? Color.WHITE : Color.rgb(23, 76, 65));
+        action.setTextSize(16);
+        action.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        action.setMinHeight(dp(50));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(-1, -2);
+        params.topMargin = dp(primary ? 16 : 8);
+        action.setLayoutParams(params);
     }
     private void showSharingChoice(){
         if(configuring || prefs.getString("token","").isEmpty())return;
@@ -166,7 +210,7 @@ public class VisitsActivity extends Activity {
     private void refresh(boolean explicit){
         if(refreshing)return;refreshing=true;
         request("worker/jobs",new JSONObject(),j->{
-            refreshing=false;screen("queue","Мои выезды");label(prefs.getString("name",""));showLocationStatus();
+            refreshing=false;screen("queue","Мои выезды");showWorkerHeader();
             JSONArray jobs=j.getJSONArray("jobs");
             if(jobs.length()>0)label(j.optBoolean("has_location")?"Сначала ближайшие по прямой":"Без свежих координат · по времени встречи и заявки");
             else label("Назначенных замеров пока нет");
@@ -175,7 +219,7 @@ public class VisitsActivity extends Activity {
                 String st=!job.isNull("started")?"Замер начат":!job.isNull("appointment")?stamp(job.getLong("appointment")):"Позвонить";
                 button(job.getString("address")+meters+"\n"+job.getString("name")+" · "+st,()->{details(job);if(job.isNull("appointment"))call(job);});
             }
-            button("Обновить очередь",()->refresh(true));button("Выйти",this::logout);
+            showQueueActions();
         });
     }
     private String stamp(long t){
