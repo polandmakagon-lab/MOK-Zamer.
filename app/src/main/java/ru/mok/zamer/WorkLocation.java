@@ -1,6 +1,8 @@
 package ru.mok.zamer;
 
 import android.app.*;
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.content.*;
 import android.content.pm.ServiceInfo;
 import android.database.Cursor;
@@ -35,13 +37,23 @@ public class WorkLocation extends Service implements LocationListener {
         ((NotificationManager)getSystemService(NOTIFICATION_SERVICE)).createNotificationChannel(
             new NotificationChannel(CHANNEL,"Рабочая геолокация",NotificationManager.IMPORTANCE_LOW));
     }
+    static boolean locationGranted(Context c){
+        return c.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==PackageManager.PERMISSION_GRANTED ||
+               c.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;
+    }
+    static boolean allowed(Context c){
+        NotificationManager n=c.getSystemService(NotificationManager.class);
+        NotificationChannel ch=n.getNotificationChannel(CHANNEL);
+        return locationGranted(c) && n.areNotificationsEnabled() &&
+               (ch==null || ch.getImportance()!=NotificationManager.IMPORTANCE_NONE);
+    }
     static boolean pending(Context c){return VisitsApi.prefs(c).contains("track");}
     static void start(Context c,long until){c.startForegroundService(new Intent(c,WorkLocation.class).putExtra(SHIFT_END,until));}
     static String endTime(Context c){
         long until=VisitsApi.prefs(c).getLong(SHIFT_END,0);
         return new SimpleDateFormat("HH:mm",Locale.getDefault()).format(new Date(until));
     }
-    static void stop(Context c){c.startForegroundService(new Intent(c,WorkLocation.class).setAction(STOP));}
+    static void stop(Context c){c.startService(new Intent(c,WorkLocation.class).setAction(STOP));}
     private Notification notice(String msg) {
         PendingIntent view=PendingIntent.getActivity(this,0,new Intent(this,VisitsActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent stop=PendingIntent.getService(this,1,new Intent(this,WorkLocation.class).setAction(STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
@@ -58,8 +70,10 @@ public class WorkLocation extends Service implements LocationListener {
     @Override public int onStartCommand(Intent intent,int flags,int id){
         SharedPreferences prefs=VisitsApi.prefs(this);
         boolean stop=intent!=null && STOP.equals(intent.getAction());
+        if(stop)prefs.edit().putLong("workPausedUntil",prefs.getLong(SHIFT_END,0)).apply();
+        if(!stop && !allowed(this)){stopSelf();return START_NOT_STICKY;}
         if(!running){
-            try {foreground();} catch(RuntimeException e){stopSelf();return START_NOT_STICKY;}
+            try {if(!stop)foreground();} catch(RuntimeException e){stopSelf();return START_NOT_STICKY;}
             token=prefs.getString("token","");base=prefs.getString("base","");
             if(token.isEmpty() || (stop && !pending(this))){stopSelf();return START_NOT_STICKY;}
             shiftEnd=intent==null ? 0 : intent.getLongExtra(SHIFT_END,0);
@@ -99,7 +113,7 @@ public class WorkLocation extends Service implements LocationListener {
     }
     @Override public void onLocationChanged(Location p){
         if(ending || track==null || !p.hasAccuracy())return;
-        if(System.currentTimeMillis()>=shiftEnd){finishCapture();return;}
+        if(!allowed(this) || System.currentTimeMillis()>=shiftEnd){finishCapture();return;}
         if(p.getTime()>=shiftEnd)return;
         long ts=p.getTime()/1000; double lat=p.getLatitude(),lon=p.getLongitude();float acc=p.getAccuracy();
         long now=System.currentTimeMillis()/1000;
@@ -111,7 +125,7 @@ public class WorkLocation extends Service implements LocationListener {
     private void sync(){
         SharedPreferences p=VisitsApi.prefs(this);
         if(!running || !track.equals(p.getString("track","")))return;
-        if(!ending && System.currentTimeMillis()>=shiftEnd){ui.post(this::finishCapture);return;}
+        if(!ending && (!allowed(this) || System.currentTimeMillis()>=shiftEnd)){ui.post(this::finishCapture);return;}
         try {
             if(!p.getBoolean("opened",false)){
                 VisitsApi.post(base,token,"worker/geo/open",VisitsApi.obj("track",track,"opened_at",p.getLong("openedAt",System.currentTimeMillis()/1000)));
@@ -144,7 +158,7 @@ public class WorkLocation extends Service implements LocationListener {
     @Override public void onDestroy(){
         running=false;ending=true;
         ui.removeCallbacksAndMessages(null);
-        if(manager!=null)manager.removeUpdates(this);
+        if(manager!=null){try{manager.removeUpdates(this);}catch(SecurityException ignored){}}
         if(io!=null){io.execute(()->queue.close());io.shutdown();}
         stopForeground(STOP_FOREGROUND_REMOVE);super.onDestroy();
     }

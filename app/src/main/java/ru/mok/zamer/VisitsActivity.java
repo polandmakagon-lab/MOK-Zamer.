@@ -19,22 +19,27 @@ public class VisitsActivity extends Activity {
     private SharedPreferences prefs;
     private LinearLayout layout;
     private TextView feedback;
-    private Button shiftLocation;
-    private long chosenShiftEnd;
+    private TextView shiftLocation;
+    private boolean configuring, starting, waitingToLogout;
     private final SharedPreferences.OnSharedPreferenceChangeListener shiftChanges =
-        (settings, key) -> updateShiftLocation();
+        (settings, key) -> {
+            updateShiftLocation();
+            if(waitingToLogout && !WorkLocation.pending(this)){
+                waitingToLogout=false;
+                logout();
+            }
+        };
     private final ExecutorService net=Executors.newSingleThreadExecutor();
     private final Handler handler=new Handler(Looper.getMainLooper());
     private JSONObject selected;
     private String pendingAlias="", page="";
     private int screenVersion;
     private boolean refreshing;
-    private final Runnable tick=new Runnable(){public void run(){if(page.equals("queue"))refresh(false);handler.postDelayed(this,20000);}};
+    private final Runnable tick=new Runnable(){public void run(){if(!page.equals("login"))checkWorkLocation();if(page.equals("queue"))refresh(false);handler.postDelayed(this,20000);}};
     interface Result {void done(JSONObject data) throws Exception;}
     private static final TimeZone MOSCOW=TimeZone.getTimeZone("Europe/Moscow");
     @Override public void onCreate(Bundle state){
         super.onCreate(state);prefs=VisitsApi.prefs(this);
-        if(state!=null)chosenShiftEnd=state.getLong("chosenShiftEnd");
         if(prefs.getString("token","").isEmpty())login();else queue();
     }
     private int dp(int n){return (int)(n*getResources().getDisplayMetrics().density+0.5f);}
@@ -87,77 +92,97 @@ public class VisitsActivity extends Activity {
         selected=null;screen("queue","Мои выезды");
         label(prefs.getString("name",""));geoControls();
         button("Обновить очередь",()->refresh(true));button("Выйти",this::logout);
-        label("Загрузка назначений…");refresh(true);
+        label("Загрузка назначений…");refresh(true);handler.post(this::checkWorkLocation);
     }
     private void logout(){
-        if(WorkLocation.pending(this)){note("Сначала завершите передачу геоданных и дождитесь отправки");return;}
-        request("logout",new JSONObject(),r->{prefs.edit().remove("token").remove("name").apply();login();});
+        if(WorkLocation.pending(this)){
+            waitingToLogout=true;WorkLocation.stop(this);
+            note("Завершаем отправку сохранённых точек и выходим из аккаунта");
+            return;
+        }
+        request("logout",new JSONObject(),r->{prefs.edit().remove("token").remove("name").remove(accountKey()).apply();login();});
     }
     private void geoControls(){
-        shiftLocation=new Button(this,null,android.R.attr.borderlessButtonStyle);
-        shiftLocation.setAllCaps(false);
+        shiftLocation=label("");
         shiftLocation.setTextSize(14);
-        shiftLocation.setGravity(android.view.Gravity.START | android.view.Gravity.CENTER_VERTICAL);
-        shiftLocation.setMinHeight(dp(48));
-        layout.addView(shiftLocation,LinearLayout.LayoutParams.WRAP_CONTENT,LinearLayout.LayoutParams.WRAP_CONTENT);
-        shiftLocation.setOnClickListener(v->{
-            if(prefs.getBoolean("closing",false) || (WorkLocation.pending(this) && WorkLocation.running)){
-                WorkLocation.stop(this);
-            }else if(WorkLocation.pending(this)){
-                new AlertDialog.Builder(this).setTitle("Геолокация смены приостановлена")
-                    .setPositiveButton("Продолжить",(dialog,which)->chooseShiftEnd())
-                    .setNegativeButton("Завершить смену",(dialog,which)->WorkLocation.stop(this)).show();
-            }else chooseShiftEnd();
-        });
         updateShiftLocation();
+    }
+    private String accountKey(){
+        return "workHours:"+prefs.getString("base","")+"|"+prefs.getString("login","").toLowerCase(Locale.ROOT);
     }
     private void updateShiftLocation(){
         if(shiftLocation==null)return;
-        String text="Геолокация выключена · Начать смену";
-        if(prefs.getBoolean("closing",false)){
-            text="Геолокация выключена · Завершить отправку";
-        }else if(WorkLocation.pending(this)){
-            text=WorkLocation.running ? "Геолокация до "+WorkLocation.endTime(this)+" · Остановить"
-                                      : "Геолокация приостановлена · Управление";
-        }
-        shiftLocation.setText(text);
+        if(WorkLocation.running && !prefs.getBoolean("closing",false)){
+            shiftLocation.setText("Маршрут доступен администратору до "+WorkLocation.endTime(this));
+        }else shiftLocation.setText("Маршрут сейчас не передаётся");
     }
-    private void chooseShiftEnd(){
-        Calendar suggested=Calendar.getInstance();
-        suggested.add(Calendar.HOUR_OF_DAY,8);
-        TimePickerDialog picker=new TimePickerDialog(this,(view,hour,minute)->{
-            Calendar end=Calendar.getInstance();
-            end.set(Calendar.HOUR_OF_DAY,hour);
-            end.set(Calendar.MINUTE,minute);
-            end.set(Calendar.SECOND,0);
-            end.set(Calendar.MILLISECOND,0);
-            if(end.getTimeInMillis()<=System.currentTimeMillis())end.add(Calendar.DATE,1);
-            chosenShiftEnd=end.getTimeInMillis();
-            enableGeo();
-        },suggested.get(Calendar.HOUR_OF_DAY),suggested.get(Calendar.MINUTE),true);
-        picker.setTitle("До какого времени показывать маршрут администратору?");
-        picker.show();
-    }
-    private void enableGeo(){
-        if(checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)!=PackageManager.PERMISSION_GRANTED &&
-                checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)!=PackageManager.PERMISSION_GRANTED){
-            requestPermissions(new String[]{Manifest.permission.ACCESS_FINE_LOCATION,Manifest.permission.ACCESS_COARSE_LOCATION},10);return;}
-        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED &&
-                !prefs.getBoolean("askedNotice",false)){prefs.edit().putBoolean("askedNotice",true).apply();requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},12);return;}
-        NotificationManager manager=getSystemService(NotificationManager.class);
-        NotificationChannel channel=manager.getNotificationChannel(WorkLocation.CHANNEL);
-        if(!manager.areNotificationsEnabled() || (channel!=null && channel.getImportance()==NotificationManager.IMPORTANCE_NONE)){
-            new AlertDialog.Builder(this).setMessage("Включите уведомления о рабочей геолокации. Из уведомления можно остановить передачу.")
-                .setNegativeButton("Отмена",null).setPositiveButton("Настройки уведомлений",(dialog,which)->{
-                    Intent settings=new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-                    settings.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName());
-                    startActivity(settings);
+    private void checkWorkLocation(){
+        if(isFinishing() || isDestroyed() || configuring || !hasWindowFocus() ||
+                prefs.getString("token","").isEmpty())return;
+        String key=accountKey();
+        if(!prefs.contains(key)){
+            configuring=true;
+            new AlertDialog.Builder(this).setTitle("Маршрут рабочего телефона")
+                .setMessage("В выбранные вами часы приложение передаёт координаты администратору МОК, в том числе при выключенном экране. Передачу видно в уведомлении Honor. Там её можно остановить.")
+                .setCancelable(false)
+                .setPositiveButton("Выбрать часы",(dialog,which)->chooseHours(key,-1))
+                .setNegativeButton("Пропустить",(dialog,which)->{
+                    prefs.edit().putInt(key,-1).apply();configuring=false;
                 }).show();
             return;
         }
-        if(chosenShiftEnd<=System.currentTimeMillis()){note("Выберите время окончания смены");return;}
-        try{WorkLocation.start(this,chosenShiftEnd);chosenShiftEnd=0;note("Включаем передачу координат");}
-        catch(RuntimeException e){note("Проверьте доступ к геолокации");}
+        int start=prefs.getInt(key,-1);
+        if(start<0 || starting || WorkLocation.running)return;
+        long now=System.currentTimeMillis();
+        long until=workEnd(Calendar.getInstance(),start,prefs.getInt(key+":end",-1));
+        if(WorkLocation.pending(this) && (prefs.getBoolean("closing",false) ||
+                prefs.getLong("shiftEndMillis",0)<=now)){
+            WorkLocation.stop(this);
+            return;
+        }
+        if(until<=now || prefs.getLong("workPausedUntil",0)>now || !WorkLocation.allowed(this))return;
+        android.location.LocationManager gps=getSystemService(android.location.LocationManager.class);
+        if(!gps.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) &&
+           !gps.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER))return;
+        starting=true;
+        try{WorkLocation.start(this,until);}
+        catch(RuntimeException e){note("Honor приостановил геолокацию");}
+        handler.postDelayed(()->starting=false,1500);
+    }
+    static long workEnd(Calendar now,int start,int end){
+        if(start<0 || end<0 || start==end)return 0;
+        int minute=now.get(Calendar.HOUR_OF_DAY)*60+now.get(Calendar.MINUTE);
+        boolean overnight=start>end;
+        boolean active=overnight ? minute>=start || minute<end : minute>=start && minute<end;
+        if(!active)return 0;
+        Calendar cutoff=(Calendar)now.clone();
+        if(overnight && minute>=start)cutoff.add(Calendar.DATE,1);
+        cutoff.set(Calendar.HOUR_OF_DAY,end/60);cutoff.set(Calendar.MINUTE,end%60);
+        cutoff.set(Calendar.SECOND,0);cutoff.set(Calendar.MILLISECOND,0);
+        return cutoff.getTimeInMillis();
+    }
+    private void chooseHours(String key,int start){
+        TimePickerDialog picker=new TimePickerDialog(this,(v,h,m)->{
+            int minutes=h*60+m;
+            if(start<0){chooseHours(key,minutes);return;}
+            if(start==minutes){
+                Toast.makeText(this,"Выберите другое время окончания",Toast.LENGTH_SHORT).show();
+                chooseHours(key,start);return;
+            }
+            prefs.edit().putInt(key,start).putInt(key+":end",minutes).apply();
+            configuring=false;
+            if(!WorkLocation.locationGranted(this)){
+                requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION,Manifest.permission.ACCESS_FINE_LOCATION},10);
+            }else requestNotice();
+        },start<0?9:18,0,true);
+        picker.setTitle(start<0?"С какого времени передавать маршрут?":"До какого времени передавать маршрут?");
+        picker.setOnCancelListener(dialog->{prefs.edit().putInt(key,-1).apply();configuring=false;});
+        picker.show();
+    }
+    private void requestNotice(){
+        if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},12);
+        }else handler.post(this::checkWorkLocation);
     }
     private void refresh(boolean explicit){
         if(refreshing)return;refreshing=true;
@@ -221,11 +246,17 @@ public class VisitsActivity extends Activity {
     }
     @Override public void onRequestPermissionsResult(int code,String[] names,int[] results){
         super.onRequestPermissionsResult(code,names,results);
-        if(code==10){if(checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==PackageManager.PERMISSION_GRANTED)enableGeo();else note("Для передачи координат нужен доступ к геолокации");}
-        if(code==12)enableGeo();
+        if(code==10 && WorkLocation.locationGranted(this))requestNotice();
+        if(code==12)handler.post(this::checkWorkLocation);
         if(code==11){if(results.length>0 && results[0]==PackageManager.PERMISSION_GRANTED)dial();else{pendingAlias="";note("Для звонка нужен доступ к телефону");}}
     }
-    @Override public void onSaveInstanceState(Bundle state){super.onSaveInstanceState(state);state.putLong("chosenShiftEnd",chosenShiftEnd);}
+    @Override public void onWindowFocusChanged(boolean focused){
+        super.onWindowFocusChanged(focused);
+        if(focused && prefs!=null){
+            if(waitingToLogout && !WorkLocation.pending(this)){waitingToLogout=false;logout();}
+            else handler.post(this::checkWorkLocation);
+        }
+    }
     @Override public void onResume(){super.onResume();prefs.registerOnSharedPreferenceChangeListener(shiftChanges);updateShiftLocation();handler.removeCallbacks(tick);handler.postDelayed(tick,20000);}
     @Override public void onPause(){prefs.unregisterOnSharedPreferenceChangeListener(shiftChanges);handler.removeCallbacks(tick);super.onPause();}
     @Override public void onDestroy(){handler.removeCallbacksAndMessages(null);net.shutdown();super.onDestroy();}
