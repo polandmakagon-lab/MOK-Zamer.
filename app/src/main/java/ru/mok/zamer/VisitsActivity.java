@@ -213,10 +213,10 @@ public class VisitsActivity extends Activity {
         locationStatus.setTooltipText(description);
     }
     private void showQueueActions() {
-        styleQueueButton(button("Обновить очередь", () -> refresh(true)), true);
-        styleQueueButton(button("Выйти", this::logout), false);
+        styleActionButton(button("Обновить очередь", () -> refresh(true)), true);
+        styleActionButton(button("Выйти", this::logout), false);
     }
-    private void styleQueueButton(Button action, boolean primary) {
+    private void styleActionButton(Button action, boolean primary) {
         GradientDrawable shape = new GradientDrawable();
         shape.setCornerRadius(dp(12));
         shape.setColor(primary ? TEAL : Color.WHITE);
@@ -298,8 +298,9 @@ public class VisitsActivity extends Activity {
     private String stamp(long t){
         SimpleDateFormat f=new SimpleDateFormat("dd.MM.yyyy HH:mm",Locale.forLanguageTag("ru"));f.setTimeZone(MOSCOW);return f.format(new Date(t*1000))+" мск";
     }
-    private void details(JSONObject job){
+    void details(JSONObject job){
         selected=job;screen("job",job.optString("name"));label(job.optString("address"));
+        styleActionButton(button("Проложить маршрут", () -> openRoute(job)), true);
         if(!job.isNull("appointment"))label("Встреча · "+stamp(job.optLong("appointment")));
         if(!job.isNull("started"))label("Замер начат · "+stamp(job.optLong("started")));
         button("Позвонить клиенту",()->call(job));
@@ -307,6 +308,27 @@ public class VisitsActivity extends Activity {
         if(!job.isNull("appointment"))button(job.isNull("started")?"Начать замер":"Открыть замер",()->startJob(job));
         button("К очереди",this::queue);
     }
+    private void openRoute(JSONObject job) {
+        double latitude = job.optDouble("lat", Double.NaN);
+        double longitude = job.optDouble("lon", Double.NaN);
+        if (!Double.isFinite(latitude) || Math.abs(latitude) > 90
+                || !Double.isFinite(longitude) || Math.abs(longitude) > 180) {
+            note("У этой заявки нет координат для маршрута");
+            return;
+        }
+
+        Uri route = Uri.parse("https://yandex.ru/maps/").buildUpon()
+                .appendQueryParameter("mode", "routes")
+                .appendQueryParameter("rtext", "~" + latitude + "," + longitude)
+                .appendQueryParameter("rtt", "auto")
+                .build();
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, route));
+        } catch (ActivityNotFoundException error) {
+            note("Установите Яндекс Карты или браузер, чтобы открыть маршрут");
+        }
+    }
+
     private void call(JSONObject job){
         request("worker/call",VisitsApi.obj("id",job.optString("id")),r->{
             String alias=r.getString("dial");

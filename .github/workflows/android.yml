@@ -3,7 +3,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [fix/visits-android-network]
+    branches: [feature/visits-driving-route]
   workflow_dispatch:
 
 jobs:
@@ -52,7 +52,7 @@ jobs:
           PY
 
       - name: Build APK
-        run: gradle assembleDebug --no-daemon
+        run: gradle assembleDebug assembleDebugAndroidTest --no-daemon
 
       - name: Prepare an Android test device
         shell: bash
@@ -99,7 +99,7 @@ jobs:
           test "$booted" = 1
           adb shell input keyevent KEYCODE_WAKEUP
           adb shell wm dismiss-keyguard
-          app=ru.mok.zamer.visits
+          app=ru.mok.zamer.visits.routes
           activity="$app/ru.mok.zamer.VisitsActivity"
           apk=app/build/outputs/apk/debug/app-debug.apk
           adb install "$apk"
@@ -147,6 +147,9 @@ jobs:
           tap_button "Войти"
           wait_text "Вход · HTTP 400 · Проверьте обязательные поля"
           echo "Android 15 reached health, worker login and queue over validated HTTPS. The normal login form received the server validation response."
+          adb install -t app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+          adb shell am instrument -w "$app.test/androidx.test.runner.AndroidJUnitRunner" | tee "$RUNNER_TEMP/route-tests.txt"
+          grep -Fq 'OK (2 tests)' "$RUNNER_TEMP/route-tests.txt"
 
       - name: Save APK
         uses: actions/upload-artifact@v4
