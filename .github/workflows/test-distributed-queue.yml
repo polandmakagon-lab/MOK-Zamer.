@@ -21,13 +21,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
           echo '3dc0ac014fcf0296ef472314f6f44f0123e2e495c26834cc0f91f1897e8e9834  apk/app-debug.apk' | sha256sum --check
           package='system-images;android-33;default;x86_64'
           sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
           df -h / "$ANDROID_HOME"
           "$sdk/sdkmanager" --install 'emulator' "$package" > /dev/null
-          echo no | "$sdk/avdmanager" create avd --force --name mok-queue --package "$package"
-          avdhome=$(sed -n 's/^path=//p' "$HOME/.android/avd/mok-queue.ini")
+          echo no | "$sdk/avdmanager" create avd --force --name mok-queue --package "$package" --path "$ANDROID_AVD_HOME/mok-queue.avd"
+          avdhome="$ANDROID_AVD_HOME/mok-queue.avd"
           sed -i '/^disk.dataPartition.size=/d' "$avdhome/config.ini"
           echo 'disk.dataPartition.size=1536M' >> "$avdhome/config.ini"
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
@@ -35,6 +37,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
+          mkdir -p "$ANDROID_AVD_HOME"
           export PATH="$ANDROID_HOME/platform-tools:$PATH"
           export ANDROID_SERIAL=emulator-5554
           adb start-server
