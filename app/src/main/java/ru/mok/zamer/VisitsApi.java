@@ -37,16 +37,32 @@ final class VisitsApi {
         Failure(int value, String message) { super(message); status=value; }
     }
     static JSONObject post(String base, String token, String action, JSONObject data) throws Exception {
-        HttpURLConnection c=(HttpURLConnection)new URI(base+"api/"+action).toURL().openConnection();
+        return post(VisitConnection.DEFAULT, base, token, action, data);
+    }
+
+    static JSONObject post(VisitConnection client, String base, String token, String action, JSONObject data) throws Exception {
+        return request(client, base + "api/" + action, token, data);
+    }
+
+    static boolean healthy(VisitConnection client, String base) throws Exception {
+        JSONObject reply = request(client, base + "healthz", "", null);
+        return reply.optBoolean("ok") && "mok-blinds-visits".equals(reply.optString("service"));
+    }
+
+    private static JSONObject request(VisitConnection client, String address, String token, JSONObject data) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) client.open(new URI(address).toURL());
         String stage = "открытие соединения";
         try {
             c.setInstanceFollowRedirects(false); c.setConnectTimeout(8000); c.setReadTimeout(12000);
-            c.setRequestMethod("POST"); c.setDoOutput(true);
-            c.setRequestProperty("Content-Type","application/json");
             if (!token.isEmpty()) c.setRequestProperty("Authorization","Bearer "+token);
-            try (OutputStream out = c.getOutputStream()) {
-                stage = "отправка запроса";
-                out.write(data.toString().getBytes(StandardCharsets.UTF_8));
+            if (data != null) {
+                c.setRequestMethod("POST");
+                c.setDoOutput(true);
+                c.setRequestProperty("Content-Type","application/json");
+                try (OutputStream out = c.getOutputStream()) {
+                    stage = "отправка запроса";
+                    out.write(data.toString().getBytes(StandardCharsets.UTF_8));
+                }
             }
             stage = "ожидание ответа";
             int code=c.getResponseCode();

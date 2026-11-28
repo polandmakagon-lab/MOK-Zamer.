@@ -3,7 +3,7 @@ name: Build Android APK
 
 on:
   push:
-    branches: [diagnostics/visits-mobile-connection]
+    branches: [fix/visits-android-network]
   workflow_dispatch:
 
 jobs:
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
           mkdir -p "$ANDROID_AVD_HOME"
-          package='system-images;android-33;default;x86_64'
+          package='system-images;android-35;google_apis;x86_64'
           sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
           df -h / "$ANDROID_HOME"
           "$sdk/sdkmanager" --install 'emulator' "$package" > /dev/null
@@ -99,7 +99,7 @@ jobs:
           test "$booted" = 1
           adb shell input keyevent KEYCODE_WAKEUP
           adb shell wm dismiss-keyguard
-          app=ru.mok.zamer.netcheck
+          app=ru.mok.zamer.visits
           activity="$app/ru.mok.zamer.VisitsActivity"
           apk=app/build/outputs/apk/debug/app-debug.apk
           adb install "$apk"
@@ -110,9 +110,9 @@ jobs:
           dump_screen() {
             adb shell uiautomator dump /sdcard/net-check.xml >/dev/null 2>&1 && adb exec-out cat /sdcard/net-check.xml > "$screen"
           }
-          click_check() {
+          tap_button() {
             dump_screen
-            xy=$(python3 -c 'import re,sys,xml.etree.ElementTree as E; btn=next(n for n in E.parse(sys.argv[1]).iter("node") if n.get("text")=="Проверить связь"); x,y,r,b=map(int,re.findall(r"\d+",btn.get("bounds"))); print((x+r)//2,(y+b)//2)' "$screen")
+            xy=$(python3 -c 'import re,sys,xml.etree.ElementTree as E; btn=next(n for n in E.parse(sys.argv[1]).iter("node") if n.get("text")==sys.argv[2]); x,y,r,b=map(int,re.findall(r"\d+",btn.get("bounds"))); print((x+r)//2,(y+b)//2)' "$screen" "$1")
             adb shell input tap $xy
           }
           wait_text() {
@@ -128,19 +128,25 @@ jobs:
             if ! adb shell ip route get 212.193.102.11 2>/dev/null | grep -q ' dev '; then break; fi
             sleep 1
           done
-          click_check
-          wait_text "Очередь · открытие соединения"
-          grep -Fq 'Вход · открытие соединения' "$screen"
-          echo "Both requests reported the offline failure phase."
+          tap_button "Проверить связь"
+          wait_text "Очередь · "
+          grep -Fq 'HttpEngine' "$screen"
+          grep -Fq 'Вход · ' "$screen"
+          if grep -Eq 'сервер ответил|Сервис · доступен' "$screen"; then exit 1; fi
+          echo "HttpEngine detected loss of mobile connectivity."
           adb shell svc data enable
           for i in $(seq 1 30); do
             if adb shell ip route get 212.193.102.11 2>/dev/null | grep -q ' dev '; then break; fi
             sleep 1
           done
-          click_check
+          tap_button "Проверить связь"
           wait_text "Очередь · сервер ответил (HTTP 401)"
           grep -Fq 'Вход · сервер ответил (HTTP 400)' "$screen"
-          echo "Android received the expected distinct responses from the public worker login and jobs endpoints."
+          grep -Fq 'Сервис · доступен' "$screen"
+          grep -Fq 'HttpEngine' "$screen"
+          tap_button "Войти"
+          wait_text "Вход · HTTP 400 · Проверьте обязательные поля"
+          echo "Android 15 reached health, worker login and queue over validated HTTPS. The normal login form received the server validation response."
 
       - name: Save APK
         uses: actions/upload-artifact@v4

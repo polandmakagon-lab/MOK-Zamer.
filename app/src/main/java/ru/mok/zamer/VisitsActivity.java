@@ -70,7 +70,7 @@ public class VisitsActivity extends Activity {
         String base=prefs.getString("base",""), token=prefs.getString("token","");int generation=screenVersion;
         net.execute(()->{
             try{
-                JSONObject res=VisitsApi.post(base,token,action,data);
+                JSONObject res=VisitsApi.post(VisitConnection.foreground(this),base,token,action,data);
                 runOnUiThread(()->{if(!isDestroyed() && screenVersion==generation){try{done.done(res);}catch(Exception e){note("Ошибка данных ответа");}}});
             }catch(Exception e){runOnUiThread(()->{
                 if(isDestroyed()||screenVersion!=generation)return;refreshing=false;
@@ -111,15 +111,23 @@ public class VisitsActivity extends Activity {
         layout.addView(check);
         check.setOnClickListener(v -> checkConnection(server.getText().toString(), check));
     }
-    private String checkEndpoint(String base, String action, int expected, String expectedMessage) {
+    private String checkEndpoint(VisitConnection client, String base, String action, int expected, String expectedMessage) {
         try {
-            VisitsApi.post(base, "", action, new JSONObject());
+            VisitsApi.post(client, base, "", action, new JSONObject());
             return "неожиданный ответ HTTP 200";
         } catch (VisitsApi.Failure error) {
             if (error.status == expected && expectedMessage.equals(error.getMessage())) {
                 return "сервер ответил (HTTP " + expected + ")";
             }
             return VisitsApi.describe(error);
+        } catch (Exception error) {
+            return VisitsApi.describe(error);
+        }
+    }
+
+    private String checkHealth(VisitConnection client, String base) {
+        try {
+            return VisitsApi.healthy(client, base) ? "доступен" : "неожиданный ответ";
         } catch (Exception error) {
             return VisitsApi.describe(error);
         }
@@ -148,12 +156,15 @@ public class VisitsActivity extends Activity {
         retry.setEnabled(false);
         note("Проверяем вход и очередь…");
         net.execute(() -> {
-            String login = checkEndpoint(base, "worker/login", 400, "Проверьте обязательные поля");
-            String jobs = checkEndpoint(base, "worker/jobs", 401, "Войдите в программу");
+            VisitConnection client = VisitConnection.foreground(this);
+            String health = checkHealth(client, base);
+            String login = checkEndpoint(client, base, "worker/login", 400, "Проверьте обязательные поля");
+            String jobs = checkEndpoint(client, base, "worker/jobs", 401, "Войдите в программу");
             runOnUiThread(() -> {
                 if (isDestroyed() || generation != screenVersion) return;
                 retry.setEnabled(true);
                 note(network + " · Android " + Build.VERSION.RELEASE + "\nСервер " + Uri.parse(base).getEncodedAuthority()
+                        + " · " + client.name() + "\nСервис · " + health
                         + "\nВход · " + login + "\nОчередь · " + jobs);
             });
         });
