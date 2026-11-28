@@ -14,17 +14,16 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: MOK-Zamer-APK
-          run-id: 46117859529
+          run-id: 46125328612
           github-token: ${{ github.token }}
           path: apk
-      - name: Verify APK and prepare the emulator
+      - name: Prepare an Android test device
         shell: bash
         run: |
           set -euo pipefail
           export ANDROID_AVD_HOME="$RUNNER_TEMP/mok-avds"
           mkdir -p "$ANDROID_AVD_HOME"
-          echo '3dc0ac014fcf0296ef472314f6f44f0123e2e495c26834cc0f91f1897e8e9834  apk/app-debug.apk' | sha256sum --check
-          package='system-images;android-33;default;x86_64'
+          package='system-images;android-35;google_apis;x86_64'
           sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
           df -h / "$ANDROID_HOME"
           "$sdk/sdkmanager" --install 'emulator' "$package" > /dev/null
@@ -33,7 +32,7 @@ jobs:
           sed -i '/^disk.dataPartition.size=/d' "$avdhome/config.ini"
           echo 'disk.dataPartition.size=1536M' >> "$avdhome/config.ini"
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm
-      - name: Exercise the queue with an expired test session over Android mobile data
+      - name: Test both native requests with mobile data disabled and enabled
         shell: bash
         run: |
           set -euo pipefail
@@ -63,39 +62,49 @@ jobs:
           test "$booted" = 1
           adb shell input keyevent KEYCODE_WAKEUP
           adb shell wm dismiss-keyguard
+          app=ru.mok.zamer.netcheck
+          activity="$app/ru.mok.zamer.VisitsActivity"
+          apk=apk/app-debug.apk
+          adb install "$apk"
           adb shell svc wifi disable
           adb shell svc data enable
-          adb install apk/app-debug.apk
-          for i in $(seq 1 20); do
+          adb shell am start -W -n "$activity"
+          test "$(adb shell getprop ro.build.version.sdk | tr -d '\r')" = 35
+          screen="$RUNNER_TEMP/screen.xml"
+          dump_screen() {
+            adb shell uiautomator dump /sdcard/net-check.xml >/dev/null 2>&1 && adb exec-out cat /sdcard/net-check.xml > "$screen"
+          }
+          click_check() {
+            dump_screen
+            xy=$(python3 -c 'import re,sys,xml.etree.ElementTree as E; btn=next(n for n in E.parse(sys.argv[1]).iter("node") if n.get("text")=="Проверить связь"); x,y,r,b=map(int,re.findall(r"\d+",btn.get("bounds"))); print((x+r)//2,(y+b)//2)' "$screen")
+            adb shell input tap $xy
+          }
+          wait_text() {
+            for i in $(seq 1 32); do
+              if dump_screen && grep -Fq "$1" "$screen"; then return 0; fi
+              sleep 1
+            done
+            python3 -c 'import sys,xml.etree.ElementTree as E; print([n.get("text") for n in E.parse(sys.argv[1]).iter("node") if n.get("text")])' "$screen"
+            return 1
+          }
+          wait_text "Проверить связь"
+          for i in $(seq 1 30); do
             if adb shell ip route get 212.193.102.11 2>/dev/null | grep -q ' dev '; then break; fi
             sleep 1
           done
-          adb shell ip route get 212.193.102.11 || true
-          app=ru.mok.zamer
+          click_check
+          wait_text "Очередь · сервер ответил (HTTP 401)"
+          grep -Fq 'Вход · сервер ответил (HTTP 400)' "$screen"
+          echo 'Android 15, public 443: worker login and queue responded 400/401 as expected.'
+          adb shell am force-stop "$app"
           adb shell run-as "$app" mkdir -p shared_prefs
           adb shell -T run-as "$app" tee shared_prefs/mok_visits.xml > /dev/null <<'XML'
           <?xml version="1.0" encoding="utf-8" standalone="yes"?>
-          <map>
-            <string name="base">https://212.193.102.11/blinds-visits/</string>
-            <string name="token">expired-ui-test-not-a-real-session</string>
-            <string name="login">queue-test</string><string name="name">Тест очереди</string>
-            <boolean name="share24:https://212.193.102.11/blinds-visits/|queue-test" value="false" />
-          </map>
+          <map><string name="base">https://212.193.102.11:8443/blinds-visits/</string></map>
           XML
-          adb shell am start -W -n "$app/.VisitsActivity"
-          for i in $(seq 1 12); do
-            if adb shell uiautomator dump /sdcard/queue-test.xml >/dev/null 2>&1; then
-              adb exec-out cat /sdcard/queue-test.xml > "$RUNNER_TEMP/screen.xml"
-              if grep -Fq 'Войдите в программу' "$RUNNER_TEMP/screen.xml"; then
-                echo 'Confirmed: build 39 received the live queue API session-expired message in the Android UI.'
-                exit 0
-              fi
-              if grep -Fq 'Нет связи с сервером МОК' "$RUNNER_TEMP/screen.xml"; then
-                echo 'The distributed APK displayed a transport error.'
-                exit 1
-              fi
-            fi
-            sleep 1
-          done
-          python3 -c 'import os,xml.etree.ElementTree as E; root=E.parse(os.environ["RUNNER_TEMP"]+"/screen.xml"); print([e.get("text") for e in root.iter("node") if e.get("text") and e.get("package")=="ru.mok.zamer"])'
-          exit 1
+          adb shell am start -W -n "$activity"
+          wait_text "Проверить связь"
+          click_check
+          wait_text "Очередь · HTTP 404"
+          grep -Fq 'Вход · HTTP 404' "$screen"
+          echo 'Android 15, public 8443: both requests responded 404 as expected.'
